@@ -1,0 +1,13 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- White diamond mark centered in the adaptive-icon safe zone, echoing the iOS icon. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,33 L75,54 L54,75 L33,54 Z" />
+    <path
+        android:fillColor="#FF8B5CF6"
+        android:pathData="M54,44 L64,54 L54,64 L44,54 Z" />
+</vector>
