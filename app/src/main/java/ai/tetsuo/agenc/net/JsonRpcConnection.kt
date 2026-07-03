@@ -67,9 +67,12 @@ class JsonRpcConnection(
     private var nextId = 0
     private val pending = mutableMapOf<Int, CompletableDeferred<JsonValue>>()
     @Volatile private var closed = false
+    /** Wall-clock of the last inbound frame (incl. relay pong echoes) — drives zombie detection. */
+    private val lastInboundAt = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
 
     fun connect() {
         val request = Request.Builder().url(url.toWsUrl()).build()
+        lastInboundAt.set(System.currentTimeMillis())
         val ws = client.newWebSocket(request, listener)
         webSocket = ws
         // The OkHttp keepalive pingInterval handles WS-level pings for loopback; the relay needs an
@@ -82,8 +85,20 @@ class JsonRpcConnection(
         while (scope.isActive && !closed) {
             delay(15.seconds)
             if (closed) return
-            if (relayMode) webSocket?.send(relayPing)
-            // Loopback ping is handled by OkHttp's pingInterval (see sharedClient).
+            if (relayMode) {
+                webSocket?.send(relayPing)
+                // ZOMBIE DETECTION (relay only): the relay echoes {t:"pong"} to every ping, so a
+                // healthy socket always has inbound traffic within a ping period. Cloudflare's edge
+                // answers the WS-protocol pings itself, which masks a dead Durable-Object downlink —
+                // the socket looks alive while every response silently vanishes. 45s of total
+                // silence = half-open socket → declare the transport closed so the hub reconnects.
+                // (Loopback needs none of this: OkHttp's pingInterval fails a dead socket itself.)
+                if (System.currentTimeMillis() - lastInboundAt.get() > 45_000) {
+                    onTransportClosed()
+                    close()
+                    return
+                }
+            }
         }
     }
 
@@ -130,6 +145,7 @@ class JsonRpcConnection(
         }
 
         val sent = webSocket?.send(outgoing) ?: false
+        android.util.Log.d("JsonRpc", "out id=$id $method sent=$sent")
         if (!sent) {
             resume(id, ConnError.Closed)
             throw ConnError.Closed
@@ -137,6 +153,7 @@ class JsonRpcConnection(
         return try {
             withTimeout(timeout) { deferred.await() }
         } catch (_: TimeoutCancellationException) {
+            android.util.Log.w("JsonRpc", "TIMEOUT id=$id $method after $timeout")
             mutex.withLock { pending.remove(id) }
             throw ConnError.Timeout(method)
         }
@@ -181,6 +198,7 @@ class JsonRpcConnection(
 
     private val listener = object : WebSocketListener() {
         override fun onMessage(webSocket: WebSocket, text: String) {
+            lastInboundAt.set(System.currentTimeMillis()) // any frame (incl. pong) proves the downlink
             handleFrame(text)
         }
 
@@ -207,11 +225,18 @@ class JsonRpcConnection(
             raw
         }
         when (val inbound = JsonRpcInbound.parse(text)) {
-            is JsonRpcInbound.Response -> resume(inbound.id, inbound.result)
-            is JsonRpcInbound.Failure ->
+            is JsonRpcInbound.Response -> {
+                android.util.Log.d("JsonRpc", "in response id=${inbound.id}")
+                resume(inbound.id, inbound.result)
+            }
+            is JsonRpcInbound.Failure -> {
+                android.util.Log.d("JsonRpc", "in error id=${inbound.id} code=${inbound.code} ${inbound.message.take(60)}")
                 inbound.id?.let { resume(it, ConnError.Rpc(inbound.code, inbound.message)) }
-            is JsonRpcInbound.Notification ->
-                _notifications.tryEmit(Notification(inbound.method, inbound.params))
+            }
+            is JsonRpcInbound.Notification -> {
+                val ok = _notifications.tryEmit(Notification(inbound.method, inbound.params))
+                if (!ok) android.util.Log.w("JsonRpc", "notification DROPPED (buffer full): ${inbound.method}")
+            }
             null -> Unit
         }
     }
@@ -221,6 +246,7 @@ class JsonRpcConnection(
     private fun onTransportClosed() {
         if (transportClosedEmitted) return
         transportClosedEmitted = true
+        android.util.Log.w("JsonRpc", "transport closed")
         failAll(ConnError.Closed)
         _notifications.tryEmit(Notification("\$transport.closed", JsonValue.Null))
     }

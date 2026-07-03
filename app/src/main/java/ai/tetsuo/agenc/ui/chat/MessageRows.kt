@@ -23,9 +23,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
@@ -62,19 +66,70 @@ fun MessageRow(
     item: TranscriptItem,
     streaming: Boolean,
     thinkingSeconds: Int?,
+    thinkingLive: Boolean = true,
     reduceMotion: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     when (item) {
         is TranscriptItem.User -> UserBubble(item.text, modifier)
+        is TranscriptItem.Voice -> VoiceBubble(item.seconds, item.transcript, modifier)
         is TranscriptItem.Assistant -> AssistantText(item.text, streaming, reduceMotion, modifier)
-        is TranscriptItem.Thinking -> ThinkingRow(item.text, thinkingSeconds, reduceMotion, modifier)
+        is TranscriptItem.Thinking ->
+            ThinkingRow(item.text, thinkingSeconds, thinkingLive, reduceMotion, modifier)
         // Hidden categories — never reach here once items pass through forDisplay(), but render
         // nothing defensively so the composable stays total.
         is TranscriptItem.Tool,
         is TranscriptItem.ToolGroup,
         is TranscriptItem.Divider,
         -> Unit
+    }
+}
+
+/**
+ * A user voice message: a right-aligned accent bubble with a play button, a static waveform, and
+ * the clip duration, plus a small transcript caption underneath. Playback is cosmetic (demo).
+ */
+@Composable
+fun VoiceBubble(seconds: Int, transcript: String, modifier: Modifier = Modifier) {
+    // A fixed, natural-looking waveform (heights in dp) so the bubble reads as a real audio clip.
+    val bars = listOf(6, 11, 16, 9, 20, 13, 7, 17, 22, 12, 8, 15, 19, 10, 6, 14, 21, 9, 13, 7)
+    Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        Row(
+            modifier = Modifier
+                .background(Brand.accent, RoundedCornerShape(22.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier.size(30.dp).background(Color.White.copy(alpha = 0.22f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow, contentDescription = "Play voice message",
+                    tint = Color.White, modifier = Modifier.size(18.dp),
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                for (h in bars) {
+                    Box(
+                        modifier = Modifier
+                            .width(2.5.dp)
+                            .height(h.dp)
+                            .background(Color.White.copy(alpha = 0.85f), RoundedCornerShape(2.dp)),
+                    )
+                }
+            }
+            Text(
+                text = "0:%02d".format(seconds.coerceIn(1, 59)),
+                color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium,
+            )
+        }
+        // No transcript caption — the voice bubble stands alone (the transcript still travels as
+        // the transfer note internally).
     }
 }
 
@@ -134,12 +189,20 @@ fun AssistantText(
 fun ThinkingRow(
     text: String,
     seconds: Int?,
+    live: Boolean = true,
     reduceMotion: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val animating = seconds == null && !reduceMotion
-    val headline = if (seconds != null) "thought for ${seconds}s" else "thinking…"
+    // Animate ONLY while the turn is actually in flight: without [live] a row whose duration was
+    // never frozen (e.g. restored/edge event orders) would shimmer "thinking…" forever after the
+    // answer arrived.
+    val animating = seconds == null && live && !reduceMotion
+    val headline = when {
+        seconds != null -> "thought for ${seconds}s"
+        live -> "thinking…"
+        else -> "thought"
+    }
 
     // Continuous 0→1 phase that drives the rainbow gradient's horizontal offset.
     val phase = if (animating) {

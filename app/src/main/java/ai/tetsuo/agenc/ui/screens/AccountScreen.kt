@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -63,12 +64,14 @@ fun AccountScreen(
     identity: Identity?,
     onLogout: () -> Unit,
     prefs: Prefs? = runCatching { AppGraph.prefs }.getOrNull(),
+    onOpenLedger: (() -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(colors.background)
+            .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -90,6 +93,11 @@ fun AccountScreen(
             NotificationsSection(prefs)
         }
 
+        if (onOpenLedger != null) {
+            Spacer(Modifier.height(20.dp))
+            WalletSection(onOpenLedger)
+        }
+
         Spacer(Modifier.height(20.dp))
         LogoutButton(onLogout)
         // Leave room for the floating tab bar.
@@ -103,6 +111,30 @@ fun AccountScreen(
  * hour pickers, and a turn-done threshold stepper. Writes straight through to [Prefs] (not reactive,
  * so local Compose state mirrors it).
  */
+/** Wallet actions — sign transfers with the Ledger Flex over BLE (keys stay on the device). */
+@Composable
+private fun WalletSection(onOpenLedger: () -> Unit) {
+    SettingsCard {
+        SectionHeader("Wallet")
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpenLedger)
+                .padding(vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Fund agent from Ledger",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 16.sp,
+                modifier = Modifier.weight(1f),
+            )
+            Text(text = "\u203A", color = Brand.accent, fontSize = 20.sp)
+        }
+        SectionFooter("Connect your Ledger Flex over Bluetooth and approve transfers on the device \u2014 keys never leave it.")
+    }
+}
+
 @Composable
 private fun NotificationsSection(prefs: Prefs) {
     val colors = MaterialTheme.colorScheme

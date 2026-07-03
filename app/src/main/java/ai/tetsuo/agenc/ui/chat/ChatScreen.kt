@@ -10,10 +10,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -83,6 +85,13 @@ fun ChatScreen(
     onRespond: (id: String, answer: String) -> Unit,
     onBack: () -> Unit,
     reduceMotion: Boolean = false,
+    /** Thinking msgId → measured reasoning seconds (SessionStore.thinkingDurations). */
+    thinkingDurations: Map<String, Int> = emptyMap(),
+    // Voice recording (demo).
+    isRecording: Boolean = false,
+    recordSeconds: Int = 0,
+    onMic: () -> Unit = {},
+    onStopRecording: () -> Unit = {},
 ) {
     val display = forDisplay(items)
     val lastId = items.lastOrNull()?.id
@@ -112,7 +121,11 @@ fun ChatScreen(
                     MessageRow(
                         item = item,
                         streaming = isStreaming(item, lifecycle, lastId),
-                        thinkingSeconds = null,
+                        // Frozen reasoning duration → static "thought for Ns" once measured.
+                        thinkingSeconds = (item as? TranscriptItem.Thinking)
+                            ?.let { thinkingDurations[it.msgId] },
+                        // No duration + turn over → static "thought", never an eternal shimmer.
+                        thinkingLive = lifecycle.isInFlight,
                         reduceMotion = reduceMotion,
                     )
                 }
@@ -126,14 +139,22 @@ fun ChatScreen(
             }
 
             // Float-free attached composer / banner. The composer owns its own draft text.
+            // Pad by max(IME, navBar): edge-to-edge means the keyboard would otherwise draw OVER the
+            // composer (you'd tap "Ask anything", the keyboard covers the field, and typing looks dead).
+            // ime.union(navigationBars) lifts it above the keyboard when open, above the nav bar when closed.
+            val composerInsets = WindowInsets.ime.union(WindowInsets.navigationBars)
             if (isReadOnly) {
-                ReadOnlyBanner(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars))
+                ReadOnlyBanner(modifier = Modifier.windowInsetsPadding(composerInsets))
             } else {
-                Box(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
+                Box(modifier = Modifier.windowInsetsPadding(composerInsets)) {
                     Composer(
                         isInFlight = lifecycle.isInFlight,
                         onSend = onSend,
                         onStop = onStop,
+                        isRecording = isRecording,
+                        recordSeconds = recordSeconds,
+                        onMic = onMic,
+                        onStopRecording = onStopRecording,
                     )
                 }
             }

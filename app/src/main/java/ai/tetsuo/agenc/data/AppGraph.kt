@@ -33,6 +33,10 @@ object AppGraph {
     lateinit var notifications: NotificationCoordinator
         private set
 
+    /** Ledger Flex BLE signing flow (fund/transfer with on-device approval). */
+    lateinit var ledger: ai.tetsuo.agenc.ledger.LedgerController
+        private set
+
     /**
      * The daemon auth cookie. With the real daemon this is the 64-hex value from
      * ~/.agenc/daemon.cookie, delivered by the connector. The relay transport carries it through to
@@ -50,6 +54,7 @@ object AppGraph {
             secure = SecureStore(app)
             auth = AuthManager(secure = secure, prefs = prefs)
             notifications = NotificationCoordinator(app).also { it.ensureChannels() }
+            ledger = ai.tetsuo.agenc.ledger.LedgerController(app)
             hub = DaemonHub(
                 endpoint = resolveEndpoint(),
                 cookie = daemonCookie,
