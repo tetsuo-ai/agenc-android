@@ -1,7 +1,11 @@
 package ai.tetsuo.agenc.ui.chat
 
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -55,7 +59,17 @@ fun Composer(
     onSend: (String) -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
+    // Voice recording (demo): the empty-field mic starts/stops a recording; while recording the
+    // composer becomes a live capture bar. Owned by the host so it can drive the scripted flow.
+    isRecording: Boolean = false,
+    recordSeconds: Int = 0,
+    onMic: () -> Unit = {},
+    onStopRecording: () -> Unit = {},
 ) {
+    if (isRecording) {
+        RecordingBar(recordSeconds, onStopRecording, modifier)
+        return
+    }
     var text by remember { mutableStateOf("") }
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -78,7 +92,9 @@ fun Composer(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = sidePadding)
+                // The spring is underdamped (dampingRatio < 1) so it overshoots; collapsing 16.dp→0.dp
+                // it briefly goes negative, and Compose's padding() throws on negative values. Clamp it.
+                .padding(horizontal = sidePadding.coerceAtLeast(0.dp))
                 .background(ChatPalette.composerFill, RoundedCornerShape(26.dp))
                 .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(26.dp))
                 .padding(horizontal = 6.dp, vertical = if (expanded) 6.dp else 7.dp),
@@ -121,17 +137,19 @@ fun Composer(
                     )
                 }
             } else {
+                // Empty field → an ENABLED mic (starts a recording); text present → the send arrow.
                 CircleControl(
-                    background = if (canSend) ChatPalette.sendButton else ChatPalette.sendButtonDisabled,
+                    background = ChatPalette.sendButton,
                     onClick = {
-                        val t = text.trim()
-                        if (t.isNotEmpty()) {
-                            text = ""
-                            onSend(t)
+                        if (canSend) {
+                            val t = text.trim()
+                            if (t.isNotEmpty()) { text = ""; onSend(t) }
+                        } else {
+                            onMic()
                         }
                     },
-                    enabled = canSend,
-                    contentDescription = if (canSend) "Send message" else "Voice input",
+                    enabled = true,
+                    contentDescription = if (canSend) "Send message" else "Record voice message",
                 ) {
                     Icon(
                         if (canSend) Icons.Filled.ArrowUpward else Icons.Filled.Mic,
@@ -140,6 +158,59 @@ fun Composer(
                         modifier = Modifier.size(18.dp),
                     )
                 }
+            }
+        }
+    }
+}
+
+/** The composer while recording: a pulsing red dot, a live timer, and a send/stop circle. */
+@Composable
+private fun RecordingBar(seconds: Int, onStop: () -> Unit, modifier: Modifier = Modifier) {
+    val pulse = rememberInfiniteTransition(label = "rec")
+    val dotAlpha by pulse.animateFloat(
+        initialValue = 0.35f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = androidx.compose.animation.core.tween(650),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
+        ),
+        label = "dot",
+    )
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 13.dp)
+            .padding(top = 4.dp, bottom = 6.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(ChatPalette.composerFill, RoundedCornerShape(26.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(26.dp))
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .alpha(dotAlpha)
+                    .background(Color(0xFFE5484D), CircleShape),
+            )
+            Text("Recording", color = Color.White, fontSize = 15.sp)
+            Text(
+                "0:%02d".format(seconds.coerceAtMost(59)),
+                color = ChatPalette.secondaryText, fontSize = 15.sp,
+            )
+            Box(Modifier.weight(1f))
+            CircleControl(
+                background = ChatPalette.sendButton,
+                onClick = onStop,
+                contentDescription = "Send voice message",
+            ) {
+                Icon(
+                    Icons.Filled.ArrowUpward, contentDescription = null,
+                    tint = ChatPalette.sendGlyph, modifier = Modifier.size(18.dp),
+                )
             }
         }
     }

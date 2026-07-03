@@ -15,9 +15,11 @@ import ai.tetsuo.agenc.net.jv
 import ai.tetsuo.agenc.notif.NotificationCoordinator
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.Lifecycle
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +33,7 @@ import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Direct port of the iOS app's DaemonHub.swift — the connection orchestrator.
@@ -58,7 +61,15 @@ class DaemonHub(
     private var relayMode: Boolean,
     private val prefs: Prefs,
     private val notifications: NotificationCoordinator? = null,
-    private val scope: CoroutineScope = CoroutineScope(Job() + Dispatchers.Default),
+    // SupervisorJob + a logging handler: one crashed child (a bad frame in the pump, a failed
+    // deliver) must NOT cancel the whole hub scope — with a plain Job() the pump, reconnect loop,
+    // and every future scope.launch silently die together and the app looks "connected but dead".
+    private val scope: CoroutineScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            CoroutineExceptionHandler { _, e ->
+                android.util.Log.e("DaemonHub", "hub coroutine crashed", e)
+            },
+    ),
 ) {
     sealed interface ConnectionState {
         data object Disconnected : ConnectionState
@@ -89,8 +100,13 @@ class DaemonHub(
     private var pumpJob: Job? = null
     private var reconnectJob: Job? = null
     private val mutex = Mutex()
+    // Set true while a connect() is mid-handshake so a second caller can't open a parallel socket.
+    private var connecting = false
 
-    private val stores = mutableMapOf<String, SessionStore>()
+    // Thread-safe: these maps are read/written from BOTH the notification pump (Dispatchers.Default)
+    // and UI-thread callbacks (send/approve/attach). ConcurrentHashMap prevents the get/put races and
+    // ConcurrentModificationExceptions the plain HashMaps caused during live sessions + reconnects.
+    private val stores = ConcurrentHashMap<String, SessionStore>()
 
     // MARK: - Notification intelligence (Android port of iOS DaemonHub notify state)
 
@@ -101,23 +117,28 @@ class DaemonHub(
     @Volatile var currentlyOpenSessionId: String? = null
 
     /** Per-session turn-start wall-clock (millis) — drives the turn-done threshold + "· ran 2m". */
-    private val turnStartedAt = mutableMapOf<String, Long>()
+    private val turnStartedAt = ConcurrentHashMap<String, Long>()
 
-    /** Per-session last agent message text — the turn-done body preview. */
-    private val lastAgentMessage = mutableMapOf<String, String?>()
+    /** Per-session last agent message text — the turn-done body preview. Absence = no message yet. */
+    private val lastAgentMessage = ConcurrentHashMap<String, String>()
 
     /** Local UI session id ↔ daemon `session_<uuid>`. */
-    private var daemonIdFor = mutableMapOf<String, String>()
-    private var localIdFor = mutableMapOf<String, String>()
+    private var daemonIdFor: MutableMap<String, String> = ConcurrentHashMap()
+    private var localIdFor: MutableMap<String, String> = ConcurrentHashMap()
     private val idMapStore = SessionIdMap(prefs)
 
     /** daemon sessionId -> agentId (from session.list), used to load a session's history. */
-    private val agentIdForSession = mutableMapOf<String, String>()
+    private val agentIdForSession = ConcurrentHashMap<String, String>()
 
     /** Messages typed while disconnected — flushed on (re)connect so nothing is dropped. */
     private val pendingSends = mutableListOf<PendingSend>()
 
-    private data class PendingSend(val sessionId: String, val text: String, val images: List<String>)
+    private data class PendingSend(
+        val sessionId: String,
+        val text: String,
+        val images: List<String>,
+        val attempts: Int = 0,
+    )
 
     /** Stable per-connection client id; the daemon keys event delivery on it. */
     private val clientId = "agenc-android-" + UUID.randomUUID().toString()
@@ -136,8 +157,8 @@ class DaemonHub(
     // MARK: - id map persistence
 
     private fun loadIdMap() {
-        daemonIdFor = idMapStore.load()
-        localIdFor = SessionIdMap.inverse(daemonIdFor)
+        daemonIdFor = ConcurrentHashMap(idMapStore.load())
+        localIdFor = ConcurrentHashMap(SessionIdMap.inverse(daemonIdFor))
     }
 
     private fun persistIdMap() = idMapStore.save(daemonIdFor)
@@ -222,30 +243,44 @@ class DaemonHub(
     // MARK: - Connection
 
     suspend fun connect() {
-        mutex.withLock { if (conn != null) return }
+        // Atomic check-and-claim: only one caller proceeds; the rest see conn!=null or connecting and
+        // bail, so we never open two sockets / two pumps for the same hub.
+        mutex.withLock {
+            if (conn != null || connecting) return
+            connecting = true
+        }
         _state.value = ConnectionState.Connecting
         val c = JsonRpcConnection(endpoint, relayMode = relayMode)
-        mutex.withLock { conn = c }
-        c.connect()
         try {
+            c.connect()
             val initResult = c.initializeHandshake(clientName = "agenc-portal", authCookie = cookie)
             _daemonProtocol.value =
                 initResult["protocol"]?.get("version")?.stringValue ?: "1.0.0"
+            // Publish the live connection only once the handshake actually succeeded.
+            mutex.withLock { conn = c; connecting = false }
             _state.value = ConnectionState.Connected
             startPump(c)
             flushPendingSends()
             refreshDaemonInfo()
             refreshSessions()
             refreshAgents()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            runCatching { c.close() }
+            mutex.withLock { conn = null; connecting = false }
+            throw e // never swallow cancellation — the caller's scope is going down
         } catch (e: Throwable) {
             _state.value = ConnectionState.Failed("can't reach your computer")
-            mutex.withLock { conn = null }
+            runCatching { c.close() }
+            mutex.withLock { conn = null; connecting = false }
+            // Self-heal: without this, a failed connect only retries on the NEXT user action
+            // (the reconnect loop starts from onPumpClosed, which needs a pump to have existed).
+            scheduleReconnect()
         }
     }
 
     suspend fun refreshSessions() {
         val c = conn ?: return
-        val result = runCatching { c.send("session.list", null) }.getOrNull() ?: return
+        val result = runCatching { c.send("session.list", jsonObject()) }.getOrNull() ?: return
         val raw = result["sessions"]?.arrayValue ?: emptyList()
         for (s in raw) {
             val sid = s["sessionId"]?.stringValue
@@ -268,14 +303,14 @@ class DaemonHub(
 
     suspend fun refreshAgents() {
         val c = conn ?: return
-        val result = runCatching { c.send("agent.list", null) }.getOrNull() ?: return
+        val result = runCatching { c.send("agent.list", jsonObject()) }.getOrNull() ?: return
         _agents.value = (result["agents"]?.arrayValue ?: emptyList()).mapNotNull { agentSummary(it) }
     }
 
     /** Daemon identity via auth.whoami (real app-server method). */
     suspend fun refreshDaemonInfo() {
         val c = conn ?: return
-        val r = runCatching { c.send("auth.whoami", null) }.getOrNull() ?: return
+        val r = runCatching { c.send("auth.whoami", jsonObject()) }.getOrNull() ?: return
         _daemonModel.value = r["model"]?.stringValue
             ?: r["identity"]?.get("model")?.stringValue ?: _daemonModel.value
         _daemonProvider.value = r["provider"]?.stringValue
@@ -351,7 +386,7 @@ class DaemonHub(
         pumpJob?.cancel()
         reconnectJob?.cancel(); reconnectJob = null
         conn?.close()
-        mutex.withLock { conn = null }
+        mutex.withLock { conn = null; connecting = false }
         _sessions.value = emptyList(); _agents.value = emptyList()
         _state.value = ConnectionState.Disconnected
         connect()
@@ -430,6 +465,8 @@ class DaemonHub(
     }
 
     fun detach(sessionId: String) {
+        // Keep the pre-seeded demo chat resident so its messages survive navigating away + back.
+        if (ai.tetsuo.agenc.Demo.ENABLED && sessionId == ai.tetsuo.agenc.Demo.SESSION_ID) return
         stores.remove(sessionId)
     }
 
@@ -462,9 +499,61 @@ class DaemonHub(
         dispatchSend(sessionId, text, imageURLs)
     }
 
+    // MARK: - Demo (scripted voice → Ledger transfer flow)
+
+    /**
+     * Register the pre-seeded demo chat (a short prior conversation) if it isn't there yet, and
+     * return its summary so the caller can open it. Idempotent — safe to call on every launch.
+     */
+    @Volatile private var demoFreshStart = true
+
+    fun ensureDemoSession(): SessionSummary {
+        val summary = _sessions.value.firstOrNull { it.id == ai.tetsuo.agenc.Demo.SESSION_ID }
+            ?: SessionSummary(
+                id = ai.tetsuo.agenc.Demo.SESSION_ID,
+                title = ai.tetsuo.agenc.Demo.SESSION_TITLE,
+                lifecycle = SessionLifecycle.Idle,
+                cwd = ai.tetsuo.agenc.Demo.SESSION_CWD,
+                subtitle = ai.tetsuo.agenc.Demo.SEED.lastOrNull()?.second ?: "",
+                updated = "now",
+            )
+        // Always float the demo chat to the TOP so it's the first thing on camera.
+        _sessions.value = listOf(summary) + _sessions.value.filterNot { it.id == summary.id }
+        persistSessions()
+        val store = storeFor(summary.id, summary.title)
+        // Fresh start each launch (clean retakes), and re-seed any time the store is empty.
+        if (demoFreshStart || store.currentItems().isEmpty()) {
+            demoFreshStart = false
+            store.reseed(ai.tetsuo.agenc.Demo.SEED)
+        }
+        return summary
+    }
+
+    /** Show a recorded voice message in the transcript and flip the turn to "thinking". */
+    fun postVoice(sessionId: String, seconds: Int, transcript: String) {
+        ensureSession(sessionId, "New chat")
+        bumpSession(sessionId) {
+            it.copy(subtitle = "Voice message", updated = "now", lifecycle = SessionLifecycle.Running)
+        }
+        stores[sessionId]?.ingest(
+            Event(UUID.randomUUID().toString(), null, EventMsg.UserVoice(seconds, transcript)),
+        )
+        stores[sessionId]?.ingest(
+            Event(UUID.randomUUID().toString(), null, EventMsg.TurnStarted("demo")),
+        )
+    }
+
+    /** Post a local assistant reply and end the turn (demo success message). */
+    fun postAgentReply(sessionId: String, text: String) {
+        val s = stores[sessionId] ?: return
+        s.ingest(Event(UUID.randomUUID().toString(), null, EventMsg.AgentMessage(text)))
+        s.ingest(Event(UUID.randomUUID().toString(), null, EventMsg.TurnComplete("demo", text)))
+        setSessionLifecycle(sessionId, SessionLifecycle.Idle)
+    }
+
     private fun dispatchSend(sessionId: String, text: String, images: List<String>) {
         if (_state.value !is ConnectionState.Connected || conn == null) {
-            pendingSends.add(PendingSend(sessionId, text, images))
+            synchronized(pendingSends) { pendingSends.add(PendingSend(sessionId, text, images)) }
             scope.launch { connect() }
             return
         }
@@ -485,7 +574,7 @@ class DaemonHub(
         return blocks
     }
 
-    private suspend fun deliver(sessionId: String, text: String, images: List<String>) {
+    private suspend fun deliver(sessionId: String, text: String, images: List<String>, attempts: Int = 0) {
         val c = conn ?: return
         // RESUME: a chat already bound to a daemon session continues the SAME agent via message.send.
         val did = knownDaemonSession(sessionId)
@@ -496,7 +585,7 @@ class DaemonHub(
                     jsonObject("sessionId" to did.jv(), "clientId" to clientId.jv()),
                 )
             }
-            val ok = runCatching {
+            val sendResult = runCatching {
                 c.send(
                     "message.send",
                     jsonObject(
@@ -505,9 +594,12 @@ class DaemonHub(
                         "clientMessageId" to UUID.randomUUID().toString().jv(),
                     ),
                 )
-            }.isSuccess
-            if (ok) return
-            // The bound daemon session is gone (e.g. AGENT_NOT_FOUND) — drop the binding, recreate below.
+            }
+            if (sendResult.isSuccess) return
+            // TRANSPORT failure (timeout/closed) = a zombie socket, NOT a dead session: keep the
+            // binding, queue the message, and rebuild the connection — flushPendingSends retries it.
+            if (requeueOnTransportFailure(sendResult.exceptionOrNull(), sessionId, text, images, attempts)) return
+            // A real RPC rejection (e.g. AGENT_NOT_FOUND after a daemon restart) — rebind below.
             unbindDaemonSession(sessionId)
             stores[sessionId]?.ingest(
                 Event(
@@ -523,9 +615,11 @@ class DaemonHub(
         val createParams = mutableMapOf<String, JsonValue>("objective" to objective.jv())
         val cwd = _sessions.value.firstOrNull { it.id == sessionId }?.cwd ?: ""
         if (cwd.isNotEmpty()) createParams["cwd"] = cwd.jv()
-        val r = runCatching { c.send("agent.create", jsonObject(createParams)) }.getOrNull()
-        val newDid = r?.get("sessionId")?.stringValue
+        val createResult = runCatching { c.send("agent.create", jsonObject(createParams)) }
+        val newDid = createResult.getOrNull()?.get("sessionId")?.stringValue
         if (newDid == null) {
+            // Zombie socket → queue + rebuild + retry instead of a dead-end error.
+            if (requeueOnTransportFailure(createResult.exceptionOrNull(), sessionId, text, images, attempts)) return
             stores[sessionId]?.ingest(
                 Event(
                     UUID.randomUUID().toString(), null,
@@ -552,16 +646,51 @@ class DaemonHub(
         }
     }
 
+    /**
+     * True (handled) when [error] is a transport failure — timeout or closed — meaning the socket
+     * is a zombie (uplink alive, downlink dead) or gone: queue the message for redelivery, tear the
+     * connection down, and reconnect. Gives up (returns false) after 2 requeues so a persistent
+     * outage still surfaces the error instead of looping agent.create against the daemon forever.
+     */
+    private fun requeueOnTransportFailure(
+        error: Throwable?,
+        sessionId: String,
+        text: String,
+        images: List<String>,
+        attempts: Int,
+    ): Boolean {
+        val transport = error is JsonRpcConnection.ConnError.Timeout ||
+            error is JsonRpcConnection.ConnError.Closed
+        if (!transport || attempts >= 2) return false
+        synchronized(pendingSends) {
+            pendingSends.add(PendingSend(sessionId, text, images, attempts + 1))
+        }
+        forceReconnect()
+        return true
+    }
+
+    /** Tear down the current (possibly half-dead) connection and dial fresh. */
+    private fun forceReconnect() {
+        scope.launch {
+            pumpJob?.cancel()
+            val old = mutex.withLock { val c = conn; conn = null; connecting = false; c }
+            runCatching { old?.close() }
+            _state.value = ConnectionState.Failed("reconnecting")
+            connect()
+        }
+    }
+
     private fun flushPendingSends() {
-        if (pendingSends.isEmpty()) return
-        val queued = pendingSends.toList()
-        pendingSends.clear()
-        for (q in queued) scope.launch { deliver(q.sessionId, q.text, q.images) }
+        val queued = synchronized(pendingSends) {
+            val q = pendingSends.toList(); pendingSends.clear(); q
+        }
+        for (q in queued) scope.launch { deliver(q.sessionId, q.text, q.images, q.attempts) }
     }
 
     private fun failPendingSends(reason: String) {
-        val sids = pendingSends.map { it.sessionId }.toSet()
-        pendingSends.clear()
+        val sids = synchronized(pendingSends) {
+            val s = pendingSends.map { it.sessionId }.toSet(); pendingSends.clear(); s
+        }
         for (sid in sids) {
             stores[sid]?.ingest(Event(UUID.randomUUID().toString(), null, EventMsg.Error(reason)))
         }
@@ -665,7 +794,7 @@ class DaemonHub(
 
     private suspend fun onPumpClosed() {
         _state.value = ConnectionState.Failed("disconnected")
-        mutex.withLock { conn = null }
+        mutex.withLock { conn = null; connecting = false }
         scheduleReconnect()
     }
 
@@ -700,7 +829,7 @@ class DaemonHub(
     }
 
     private fun failInFlightTurns(reason: String) {
-        for ((_, store) in stores) {
+        for (store in stores.values.toList()) {
             if (store.lifecycle.value.isInFlight) {
                 store.ingest(Event(UUID.randomUUID().toString(), null, EventMsg.Error(reason)))
             }
@@ -798,7 +927,7 @@ class DaemonHub(
         when (msg) {
             is EventMsg.TurnStarted, is EventMsg.UserMessage -> {
                 turnStartedAt[local] = System.currentTimeMillis()
-                lastAgentMessage[local] = null
+                lastAgentMessage.remove(local)
             }
             is EventMsg.AgentMessage -> if (msg.text.isNotEmpty()) lastAgentMessage[local] = msg.text
             is EventMsg.AgentMessageDelta ->

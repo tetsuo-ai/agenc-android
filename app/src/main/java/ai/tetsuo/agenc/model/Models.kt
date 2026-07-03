@@ -18,6 +18,8 @@ data class Event(
 sealed interface EventMsg {
     data class TurnStarted(val turnId: String) : EventMsg
     data class UserMessage(val text: String) : EventMsg
+    /** A voice message the user recorded (demo flow): duration + its transcript caption. */
+    data class UserVoice(val seconds: Int, val transcript: String) : EventMsg
     data class ThinkingDelta(val text: String) : EventMsg
     data class AgentMessageDelta(val delta: String, val resetBuffer: Boolean) : EventMsg
     data class AgentMessage(val text: String) : EventMsg
@@ -83,6 +85,10 @@ sealed interface TranscriptItem {
 
     data class User(val msgId: String, val text: String) : TranscriptItem {
         override val id get() = "u-$msgId"
+    }
+    /** A user voice message: a playable-looking bubble with duration + transcript caption. */
+    data class Voice(val msgId: String, val seconds: Int, val transcript: String) : TranscriptItem {
+        override val id get() = "v-$msgId"
     }
     data class Assistant(val msgId: String, val text: String) : TranscriptItem {
         override val id get() = "a-$msgId"

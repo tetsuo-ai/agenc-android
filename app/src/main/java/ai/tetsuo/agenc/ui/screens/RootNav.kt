@@ -104,6 +104,7 @@ fun RootNav(
     onLogout: () -> Unit,
     mutedSessions: Set<String> = emptySet(),
     onToggleMute: (String) -> Unit = {},
+    onOpenLedger: (() -> Unit)? = null,
 ) {
     when (route) {
         AppRoute.Login -> LoginScreen(
@@ -130,6 +131,7 @@ fun RootNav(
             onLogout = onLogout,
             mutedSessions = mutedSessions,
             onToggleMute = onToggleMute,
+            onOpenLedger = onOpenLedger,
         )
     }
 }
@@ -149,6 +151,7 @@ private fun MainShell(
     onLogout: () -> Unit,
     mutedSessions: Set<String>,
     onToggleMute: (String) -> Unit,
+    onOpenLedger: (() -> Unit)? = null,
 ) {
     var tab by remember { mutableStateOf(initialTab) }
     val colors = MaterialTheme.colorScheme
@@ -178,6 +181,7 @@ private fun MainShell(
             MainTab.Account -> AccountScreen(
                 identity = identity,
                 onLogout = onLogout,
+                onOpenLedger = onOpenLedger,
             )
         }
 

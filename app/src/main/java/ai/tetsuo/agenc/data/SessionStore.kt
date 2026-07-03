@@ -34,8 +34,10 @@ import java.util.UUID
  *    the latest line in view while tokens stream
  *  - [thinkingDurations] — thinking-item id → measured reasoning seconds
  *
- * NOTE on threading: ingestion must be serialized by the caller (DaemonHub drives it from a single
- * coroutine). Reads happen on the main thread via the StateFlows.
+ * NOTE on threading: [ingest] is `@Synchronized` so it is safe to call from multiple threads
+ * (the notification pump on Dispatchers.Default AND UI-thread paths like attach/send). All transcript
+ * mutation funnels through it, so the plain backing collections never race. Reads happen on the main
+ * thread via the StateFlows (which are themselves thread-safe).
  */
 class SessionStore(
     val id: String,
@@ -92,6 +94,7 @@ class SessionStore(
 
     // MARK: Ingestion
 
+    @Synchronized
     fun ingest(event: Event) {
         // Idempotent on the daemon's eventId: a reconnect replays buffered events.
         if (event.id.isNotEmpty()) {
@@ -134,6 +137,15 @@ class SessionStore(
                 currentTurnToolGroupIndex = null; currentTurnThinkingIndex = null
                 currentThinkingStart = null; currentThinkingId = null
                 itemsList.add(TranscriptItem.User(msgId = UUID.randomUUID().toString(), text = msg.text))
+            }
+
+            is EventMsg.UserVoice -> {
+                thinkingBuffer = ""; assistantBuffer = ""
+                currentTurnToolGroupIndex = null; currentTurnThinkingIndex = null
+                currentThinkingStart = null; currentThinkingId = null
+                itemsList.add(
+                    TranscriptItem.Voice(UUID.randomUUID().toString(), msg.seconds, msg.transcript),
+                )
             }
 
             is EventMsg.ThinkingDelta -> {
@@ -275,6 +287,26 @@ class SessionStore(
     /** Read-only snapshot for callers that need the current item list synchronously (e.g. attach). */
     fun currentItems(): List<TranscriptItem> = _items.value
 
+    /** Demo: replace the whole transcript with a fixed seed conversation (role,text) and persist it. */
+    @Synchronized
+    fun reseed(messages: List<Pair<String, String>>) {
+        itemsList.clear(); seenEventIds.clear(); durations.clear()
+        assistantBuffer = ""; thinkingBuffer = ""; currentTurnId = null; lastSeq = -1
+        currentTurnToolGroupIndex = null; currentTurnThinkingIndex = null
+        currentThinkingStart = null; currentThinkingId = null
+        for ((role, text) in messages) {
+            itemsList.add(
+                if (role == "user") TranscriptItem.User(UUID.randomUUID().toString(), text)
+                else TranscriptItem.Assistant(UUID.randomUUID().toString(), text),
+            )
+        }
+        _lifecycle.value = SessionLifecycle.Idle
+        _pendingPermission.value = null
+        _pendingElicitation.value = null
+        publishItems()
+        savePersisted()
+    }
+
     // MARK: Helpers
 
     private fun publishItems() {
@@ -361,7 +393,8 @@ class SessionStore(
                     out.add(PersistedMsg(role = "assistant", text = item.text))
                 is TranscriptItem.Tool -> out.add(toolMsg(item.card))
                 is TranscriptItem.ToolGroup -> out.addAll(item.cards.map { toolMsg(it) })
-                is TranscriptItem.Thinking, is TranscriptItem.Divider -> Unit
+                // Voice (demo) is ephemeral; thinking/divider aren't persisted either.
+                is TranscriptItem.Voice, is TranscriptItem.Thinking, is TranscriptItem.Divider -> Unit
             }
         }
         return out
