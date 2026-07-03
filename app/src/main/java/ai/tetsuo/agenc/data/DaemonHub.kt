@@ -12,6 +12,9 @@ import ai.tetsuo.agenc.net.PortalEventAdapter
 import ai.tetsuo.agenc.net.jsonArray
 import ai.tetsuo.agenc.net.jsonObject
 import ai.tetsuo.agenc.net.jv
+import ai.tetsuo.agenc.notif.NotificationCoordinator
+import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,6 +57,7 @@ class DaemonHub(
     private val cookie: String,
     private var relayMode: Boolean,
     private val prefs: Prefs,
+    private val notifications: NotificationCoordinator? = null,
     private val scope: CoroutineScope = CoroutineScope(Job() + Dispatchers.Default),
 ) {
     sealed interface ConnectionState {
@@ -87,6 +91,20 @@ class DaemonHub(
     private val mutex = Mutex()
 
     private val stores = mutableMapOf<String, SessionStore>()
+
+    // MARK: - Notification intelligence (Android port of iOS DaemonHub notify state)
+
+    /**
+     * The session the user has open RIGHT NOW. `notifyIfBackgrounded` never fires for it (foreground-
+     * session suppression), and the chat clears its badge. Set/cleared from the ChatHost.
+     */
+    @Volatile var currentlyOpenSessionId: String? = null
+
+    /** Per-session turn-start wall-clock (millis) — drives the turn-done threshold + "· ran 2m". */
+    private val turnStartedAt = mutableMapOf<String, Long>()
+
+    /** Per-session last agent message text — the turn-done body preview. */
+    private val lastAgentMessage = mutableMapOf<String, String?>()
 
     /** Local UI session id ↔ daemon `session_<uuid>`. */
     private var daemonIdFor = mutableMapOf<String, String>()
@@ -606,12 +624,14 @@ class DaemonHub(
                 val eid = note.params["eventId"]?.stringValue?.let { "${note.method}:$it" }
                     ?: UUID.randomUUID().toString()
                 stores[local]?.ingest(Event(eid, null, mapped.msg))
+                trackTurnTiming(local, mapped.msg)
                 val store = stores[local]
                 if (store != null) {
                     setSessionLifecycle(local, store.lifecycle.value)
                 } else {
                     listLifecycleHint(mapped.msg)?.let { setSessionLifecycle(local, it) }
                 }
+                notifyIfBackgrounded(local, mapped.msg)
             }
         }
     }
@@ -624,19 +644,20 @@ class DaemonHub(
         val runStatus = p["runStatus"]?.stringValue ?: ""
         if (status == "error" || runStatus == "errored") {
             val m = p["message"]?.stringValue ?: "Agent error"
-            stores[local]?.ingest(Event(UUID.randomUUID().toString(), null, EventMsg.Error(m)))
+            val err = EventMsg.Error(m)
+            stores[local]?.ingest(Event(UUID.randomUUID().toString(), null, err))
             setSessionLifecycle(local, SessionLifecycle.Idle)
+            notifyIfBackgrounded(local, err)
         } else if (status in IDLE_STATUSES || runStatus in IDLE_RUN_STATUSES) {
             // The agent went idle → the turn finished. The daemon doesn't always emit turn_complete,
-            // so flip the OPEN chat out of "working" here.
+            // so flip the OPEN chat out of "working" here. Only treat it as a real turn-done (and
+            // notify) when a turn was actually in flight — bare idle pings shouldn't spam a banner.
             val s = stores[local]
-            if (s != null && s.lifecycle.value.isInFlight) {
-                s.ingest(
-                    Event(
-                        UUID.randomUUID().toString(), null,
-                        EventMsg.TurnComplete(turnId = "", last = null),
-                    ),
-                )
+            val wasInFlight = s != null && s.lifecycle.value.isInFlight
+            if (wasInFlight) {
+                val complete = EventMsg.TurnComplete(turnId = "", last = null)
+                s.ingest(Event(UUID.randomUUID().toString(), null, complete))
+                notifyIfBackgrounded(local, complete, synthetic = true)
             }
             setSessionLifecycle(local, stores[local]?.lifecycle?.value ?: SessionLifecycle.Idle)
         }
@@ -764,6 +785,131 @@ class DaemonHub(
         "done" -> SessionLifecycle.Done
         "error" -> SessionLifecycle.Error("error")
         else -> SessionLifecycle.Idle
+    }
+
+    // MARK: - Notification intelligence (Android port of iOS DaemonHub notify methods)
+
+    /**
+     * Stamp a session's turn-start time on its first activity, capture the agent's last message for
+     * the turn-done preview, and clear the start time at completion. Drives the turn-done threshold
+     * and the "· ran 2m" body suffix. Independent of the notification gate so timing is always accurate.
+     */
+    private fun trackTurnTiming(local: String, msg: EventMsg) {
+        when (msg) {
+            is EventMsg.TurnStarted, is EventMsg.UserMessage -> {
+                turnStartedAt[local] = System.currentTimeMillis()
+                lastAgentMessage[local] = null
+            }
+            is EventMsg.AgentMessage -> if (msg.text.isNotEmpty()) lastAgentMessage[local] = msg.text
+            is EventMsg.AgentMessageDelta ->
+                lastAgentMessage[local] =
+                    if (msg.resetBuffer) msg.delta else (lastAgentMessage[local] ?: "") + msg.delta
+            is EventMsg.TurnAborted, is EventMsg.Error -> turnStartedAt.remove(local)
+            else -> Unit
+        }
+        // The very first activity of a turn might be a tool/thinking event before any turnStarted —
+        // stamp a start so a duration still exists at completion.
+        if (turnStartedAt[local] == null &&
+            (msg is EventMsg.ToolCallStarted || msg is EventMsg.ThinkingDelta)
+        ) {
+            turnStartedAt[local] = System.currentTimeMillis()
+        }
+    }
+
+    /** Elapsed seconds for this session's current turn, or null if no start was recorded. */
+    private fun turnDuration(local: String): Int? {
+        val start = turnStartedAt[local] ?: return null
+        return maxOf(0, Math.round((System.currentTimeMillis() - start) / 1000.0).toInt())
+    }
+
+    /** "· ran 2m" / "· ran 45s" suffix for a turn-done body, or "" when there's no duration. */
+    private fun durationSuffix(seconds: Int?): String {
+        if (seconds == null || seconds <= 0) return ""
+        if (seconds < 60) return " · ran ${seconds}s"
+        return " · ran ${seconds / 60}m"
+    }
+
+    private fun sessionTitle(local: String): String =
+        _sessions.value.firstOrNull { it.id == local }?.title ?: "AgenC"
+
+    /** The app is backgrounded when the process lifecycle is below STARTED. */
+    private fun isBackgrounded(): Boolean =
+        !ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+
+    /**
+     * Fire a local notification for events the user cares about WHILE BACKGROUNDED, each gated by its
+     * own toggle and an intelligence layer (per-session mute, the foreground session, a turn-done
+     * threshold, and quiet hours). Direct port of the iOS `notifyIfBackgrounded`.
+     *
+     * @param synthetic true for a completion synthesized from `agent_status` idle (still a real
+     * turn-done for notification purposes) so the turn-done path runs even without a wire TurnComplete.
+     */
+    private fun notifyIfBackgrounded(local: String, msg: EventMsg, synthetic: Boolean = false) {
+        val nc = notifications ?: return
+        if (!isBackgrounded()) {
+            // Still consume a completed turn's start time so a later foreground turn re-stamps cleanly.
+            if (msg is EventMsg.TurnComplete) turnStartedAt.remove(local)
+            return
+        }
+
+        // Never notify for the session the user has open right now, or one they've explicitly muted.
+        if (local == currentlyOpenSessionId || prefs.mutedSessions.contains(local)) {
+            if (msg is EventMsg.TurnComplete) turnStartedAt.remove(local)
+            return
+        }
+
+        val title = sessionTitle(local)
+        when (msg) {
+            is EventMsg.RequestPermissions -> if (prefs.notifyAttention) {
+                // Needs-you — the turn is blocked on a decision (high-importance channel).
+                nc.post(
+                    title = "Approval needed · $title",
+                    body = msg.pending.title,
+                    sessionId = local,
+                    requestId = msg.pending.id,
+                    kind = NotificationCoordinator.Kind.PERMISSION,
+                )
+            }
+            is EventMsg.RequestUserInput -> if (prefs.notifyAttention) {
+                nc.post(
+                    title = "Input needed · $title",
+                    body = msg.pending.question,
+                    sessionId = local,
+                    requestId = msg.pending.id,
+                    kind = NotificationCoordinator.Kind.INPUT,
+                )
+            }
+            is EventMsg.TurnComplete -> if (prefs.notifyTurnDone) {
+                val duration = turnDuration(local)
+                turnStartedAt.remove(local) // consume the start time for this turn
+                // THRESHOLD: skip quick turns — a sub-threshold round-trip isn't worth a banner.
+                if (duration != null && duration < prefs.turnDoneThresholdSeconds) return
+                // QUIET HOURS: turn-done is non-urgent, so suppress it inside the quiet window
+                // (needs-you / error still fire above).
+                if (prefs.isWithinQuietHours()) return
+                val preview = (msg.last?.takeIf { it.isNotEmpty() } ?: lastAgentMessage[local])
+                    ?: "Your agent finished a turn."
+                val body = preview.take(140) + durationSuffix(duration)
+                nc.post(
+                    title = "Turn complete · $title",
+                    body = body,
+                    sessionId = local,
+                    requestId = null,
+                    kind = NotificationCoordinator.Kind.TURN_DONE,
+                )
+            }
+            is EventMsg.Error -> if (prefs.notifyErrors) {
+                turnStartedAt.remove(local)
+                nc.post(
+                    title = "Agent error · $title",
+                    body = msg.message,
+                    sessionId = local,
+                    requestId = null,
+                    kind = NotificationCoordinator.Kind.ERROR,
+                )
+            }
+            else -> Unit
+        }
     }
 
     companion object {

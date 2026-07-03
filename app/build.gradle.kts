@@ -50,6 +50,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    // App-wide foreground/background tracking for the local notification gate (notifyIfBackgrounded).
+    implementation("androidx.lifecycle:lifecycle-process:2.8.7")
 
     // Foundation layer: networking + serialization + secure storage + coroutines.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

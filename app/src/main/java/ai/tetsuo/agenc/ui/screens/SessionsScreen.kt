@@ -2,6 +2,7 @@ package ai.tetsuo.agenc.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -56,6 +58,8 @@ import ai.tetsuo.agenc.ui.Brand
  * @param onOpen fires when a row is tapped.
  * @param onNewChat fires from the empty-state button (and from the host where wired).
  * @param onAccount account action (kept for signature compatibility; the tab bar owns navigation).
+ * @param mutedSessions ids the user has muted — no background notifications; shown with a bell-slash.
+ * @param onToggleMute long-press action to mute/unmute a session (Android's swipe-action equivalent).
  */
 @Composable
 fun SessionsScreen(
@@ -63,6 +67,8 @@ fun SessionsScreen(
     onOpen: (SessionSummary) -> Unit,
     onNewChat: () -> Unit,
     @Suppress("UNUSED_PARAMETER") onAccount: () -> Unit,
+    mutedSessions: Set<String> = emptySet(),
+    onToggleMute: (String) -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
     Column(
@@ -87,20 +93,31 @@ fun SessionsScreen(
                 contentPadding = PaddingValues(top = 8.dp, bottom = 120.dp),
             ) {
                 items(sessions, key = { it.id }) { session ->
-                    SessionRow(summary = session, onClick = { onOpen(session) })
+                    SessionRow(
+                        summary = session,
+                        muted = mutedSessions.contains(session.id),
+                        onClick = { onOpen(session) },
+                        onLongClick = { onToggleMute(session.id) },
+                    )
                 }
             }
         }
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun SessionRow(summary: SessionSummary, onClick: () -> Unit) {
+private fun SessionRow(
+    summary: SessionSummary,
+    muted: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.Top,
     ) {
@@ -122,7 +139,17 @@ private fun SessionRow(summary: SessionSummary, onClick: () -> Unit) {
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
                 )
+                if (muted) {
+                    Spacer(Modifier.width(5.dp))
+                    Icon(
+                        imageVector = Icons.Filled.NotificationsOff,
+                        contentDescription = "Muted",
+                        tint = colors.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
             }
             if (summary.subtitle.isNotBlank()) {
                 Spacer(Modifier.height(2.dp))

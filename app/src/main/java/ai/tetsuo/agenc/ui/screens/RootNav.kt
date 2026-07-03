@@ -102,6 +102,8 @@ fun RootNav(
     @Suppress("UNUSED_PARAMETER") onOpenAccount: () -> Unit,
     identity: Identity?,
     onLogout: () -> Unit,
+    mutedSessions: Set<String> = emptySet(),
+    onToggleMute: (String) -> Unit = {},
 ) {
     when (route) {
         AppRoute.Login -> LoginScreen(
@@ -126,6 +128,8 @@ fun RootNav(
             onNewChat = onNewChat,
             identity = identity,
             onLogout = onLogout,
+            mutedSessions = mutedSessions,
+            onToggleMute = onToggleMute,
         )
     }
 }
@@ -143,6 +147,8 @@ private fun MainShell(
     onNewChat: () -> Unit,
     identity: Identity?,
     onLogout: () -> Unit,
+    mutedSessions: Set<String>,
+    onToggleMute: (String) -> Unit,
 ) {
     var tab by remember { mutableStateOf(initialTab) }
     val colors = MaterialTheme.colorScheme
@@ -165,6 +171,8 @@ private fun MainShell(
                 onOpen = onOpenSession,
                 onNewChat = onNewChat,
                 onAccount = { tab = MainTab.Account },
+                mutedSessions = mutedSessions,
+                onToggleMute = onToggleMute,
             )
 
             MainTab.Account -> AccountScreen(
