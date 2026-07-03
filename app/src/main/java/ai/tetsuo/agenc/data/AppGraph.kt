@@ -1,6 +1,7 @@
 package ai.tetsuo.agenc.data
 
 import ai.tetsuo.agenc.AppConfig
+import ai.tetsuo.agenc.notif.NotificationCoordinator
 import android.content.Context
 
 /**
@@ -28,6 +29,10 @@ object AppGraph {
     lateinit var hub: DaemonHub
         private set
 
+    /** Local notification poster + channel owner. Shared by the hub (post) and the receiver (clear). */
+    lateinit var notifications: NotificationCoordinator
+        private set
+
     /**
      * The daemon auth cookie. With the real daemon this is the 64-hex value from
      * ~/.agenc/daemon.cookie, delivered by the connector. The relay transport carries it through to
@@ -44,11 +49,13 @@ object AppGraph {
             prefs = Prefs(app)
             secure = SecureStore(app)
             auth = AuthManager(secure = secure, prefs = prefs)
+            notifications = NotificationCoordinator(app).also { it.ensureChannels() }
             hub = DaemonHub(
                 endpoint = resolveEndpoint(),
                 cookie = daemonCookie,
                 relayMode = resolveRelayMode(),
                 prefs = prefs,
+                notifications = notifications,
             )
             auth.restore()
             initialized = true

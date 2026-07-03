@@ -33,5 +33,11 @@
                 <data android:scheme="agenc" />
             </intent-filter>
         </activity>
+
+        <!-- Routes notification action-button taps (Allow once / Allow for session / Deny / Reply).
+             Not exported: only this app's PendingIntents can trigger it. -->
+        <receiver
+            android:name=".notif.NotificationActionReceiver"
+            android:exported="false" />
     </application>
 </manifest>
