@@ -5,11 +5,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -224,17 +226,43 @@ object SolanaTx {
  */
 class SolanaRpc(private val endpoint: String = "https://api.mainnet-beta.solana.com") {
 
+    /** A JSON-RPC error is a definitive node response (unlike a transport timeout). */
+    class RpcResponseException(message: String) : IOException(message)
+
+    data class SignatureStatus(
+        val confirmationStatus: String?,
+        val error: String?,
+    )
+
+    data class LatestBlockhash(
+        val bytes: ByteArray,
+        val lastValidBlockHeight: Long,
+    )
+
     /** Fetches the latest blockhash (confirmed commitment) and returns its raw 32 bytes. */
-    suspend fun latestBlockhash(): ByteArray {
+    suspend fun latestBlockhash(): LatestBlockhash {
         val params = buildJsonArray {
             add(buildJsonObject { put("commitment", "confirmed") })
         }
         val result = call("getLatestBlockhash", params)
-        val blockhash = result.jsonObject["value"]?.jsonObject?.get("blockhash")?.jsonPrimitive?.contentOrNull
+        val value = result.jsonObject["value"]?.jsonObject
+            ?: throw IOException("getLatestBlockhash: missing result.value")
+        val blockhash = value["blockhash"]?.jsonPrimitive?.contentOrNull
             ?: throw IOException("getLatestBlockhash: missing result.value.blockhash")
+        val lastValidBlockHeight = value["lastValidBlockHeight"]?.jsonPrimitive?.longOrNull
+            ?: throw IOException("getLatestBlockhash: missing result.value.lastValidBlockHeight")
         val bytes = Base58.decode(blockhash)
         if (bytes.size != 32) throw IOException("getLatestBlockhash: blockhash decoded to ${bytes.size} bytes, expected 32")
-        return bytes
+        return LatestBlockhash(bytes, lastValidBlockHeight)
+    }
+
+    /** Current confirmed block height, used to prove an absent signed transaction has expired. */
+    suspend fun blockHeight(): Long {
+        val params = buildJsonArray {
+            add(buildJsonObject { put("commitment", "confirmed") })
+        }
+        return call("getBlockHeight", params).jsonPrimitive.longOrNull
+            ?: throw IOException("getBlockHeight: missing numeric result")
     }
 
     /** Returns the lamport balance of [pubkeyBase58] (confirmed commitment). */
@@ -246,6 +274,18 @@ class SolanaRpc(private val endpoint: String = "https://api.mainnet-beta.solana.
         val result = call("getBalance", params)
         return result.jsonObject["value"]?.jsonPrimitive?.longOrNull
             ?: throw IOException("getBalance: missing numeric result.value")
+    }
+
+    /** Returns the node's live fee estimate for an unsigned serialized transaction message. */
+    suspend fun feeForMessageLamports(message: ByteArray): Long {
+        val encoded = java.util.Base64.getEncoder().encodeToString(message)
+        val params = buildJsonArray {
+            add(JsonPrimitive(encoded))
+            add(buildJsonObject { put("commitment", "confirmed") })
+        }
+        val result = call("getFeeForMessage", params)
+        return result.jsonObject["value"]?.jsonPrimitive?.longOrNull
+            ?: throw IOException("getFeeForMessage: fee unavailable")
     }
 
     /**
@@ -269,6 +309,28 @@ class SolanaRpc(private val endpoint: String = "https://api.mainnet-beta.solana.
         val result = call("sendTransaction", params)
         return result.jsonPrimitive.contentOrNull
             ?: throw IOException("sendTransaction: missing signature in result")
+    }
+
+    /**
+     * Returns null while the cluster has no record of [signature]. A non-null status proves the
+     * exact already-signed transaction reached the cluster, even if sendTransaction's HTTP reply
+     * was lost after submission.
+     */
+    suspend fun signatureStatus(signature: String): SignatureStatus? {
+        val params = buildJsonArray {
+            add(buildJsonArray { add(JsonPrimitive(signature)) })
+            add(buildJsonObject { put("searchTransactionHistory", true) })
+        }
+        val result = call("getSignatureStatuses", params).jsonObject
+        val first = result["value"]?.jsonArray?.firstOrNull() ?: return null
+        if (first is JsonNull) return null
+        val status = first.jsonObject
+        val errorElement = status["err"]
+        val error = if (errorElement == null || errorElement is JsonNull) null else errorElement.toString()
+        return SignatureStatus(
+            confirmationStatus = status["confirmationStatus"]?.jsonPrimitive?.contentOrNull,
+            error = error,
+        )
     }
 
     // MARK: - JSON-RPC plumbing
@@ -304,7 +366,9 @@ class SolanaRpc(private val endpoint: String = "https://api.mainnet-beta.solana.
                     val obj = runCatching { error.jsonObject }.getOrNull()
                     val message = obj?.get("message")?.jsonPrimitive?.contentOrNull ?: error.toString()
                     val code = obj?.get("code")?.jsonPrimitive?.contentOrNull
-                    throw IOException(if (code != null) "$method: $message (code $code)" else "$method: $message")
+                    throw RpcResponseException(
+                        if (code != null) "$method: $message (code $code)" else "$method: $message",
+                    )
                 }
                 root["result"] ?: throw IOException("$method: missing result")
             }

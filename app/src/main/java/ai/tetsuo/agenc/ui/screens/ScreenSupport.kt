@@ -13,44 +13,53 @@ import ai.tetsuo.agenc.model.SessionLifecycle
 import ai.tetsuo.agenc.ui.Brand
 import ai.tetsuo.agenc.ui.ChatPalette
 import ai.tetsuo.agenc.ui.Onboarding
+import ai.tetsuo.agenc.ui.tint
 
 /**
  * Shared visual helpers for the ported auth/pairing/sessions/account screens.
  * Kept separate so the individual screen files stay focused on layout.
  */
 
-/** Branded outlined-text-field colors: purple focus ring on the dark canvas. */
+/** Monochrome outlined-text-field colors tuned for the dark onboarding and chat canvases. */
 @Composable
 internal fun brandedFieldColors(): TextFieldColors = OutlinedTextFieldDefaults.colors(
-    focusedTextColor = Color.White,
-    unfocusedTextColor = Color.White,
-    focusedBorderColor = Brand.accent,
+    focusedTextColor = Onboarding.ink,
+    unfocusedTextColor = Onboarding.ink,
+    disabledTextColor = Onboarding.ink.copy(alpha = 0.38f),
+    errorTextColor = Onboarding.ink,
+    focusedBorderColor = Onboarding.accentLight,
     unfocusedBorderColor = ChatPalette.divider,
-    cursorColor = Brand.accent,
-    focusedLabelColor = Brand.accent,
+    disabledBorderColor = ChatPalette.divider.copy(alpha = 0.55f),
+    errorBorderColor = Brand.danger,
+    cursorColor = Onboarding.ink,
+    errorCursorColor = Brand.danger,
+    focusedLabelColor = Onboarding.ink,
     unfocusedLabelColor = ChatPalette.secondaryText,
+    disabledLabelColor = ChatPalette.secondaryText.copy(alpha = 0.55f),
+    errorLabelColor = Brand.danger,
     focusedPlaceholderColor = ChatPalette.secondaryText,
     unfocusedPlaceholderColor = ChatPalette.secondaryText,
+    disabledPlaceholderColor = ChatPalette.secondaryText.copy(alpha = 0.55f),
+    errorPlaceholderColor = ChatPalette.secondaryText,
 )
 
 /**
- * The shared onboarding background drawn over [Onboarding.bg] — a centered purple radial glow plus a
- * vertical fade toward [Onboarding.bgDeep]. 1:1 with the iOS `Palette.background` ZStack used by the
- * Sign-in and Connect screens.
+ * Shared onboarding treatment drawn over [Onboarding.bg]: a restrained off-white halo near the top
+ * and a near-black vertical fade. It adds depth without introducing a chromatic accent.
  */
 internal fun Modifier.onboardingBackground(): Modifier = drawBehind {
-    // Centered purple radial glow.
     drawRect(
         brush = Brush.radialGradient(
-            colors = listOf(Onboarding.accent.copy(alpha = 0.18f), Color.Transparent),
-            center = Offset(size.width / 2f, size.height / 2f),
-            radius = size.maxDimension * 0.55f,
+            colors = listOf(Onboarding.accentLight.copy(alpha = 0.07f), Color.Transparent),
+            center = Offset(size.width / 2f, size.height * 0.26f),
+            radius = size.maxDimension * 0.68f,
         ),
     )
-    // Vertical fade toward the deep purple-dark at the bottom.
     drawRect(
         brush = Brush.verticalGradient(
-            colors = listOf(Color.Transparent, Onboarding.bgDeep),
+            colors = listOf(Color.Transparent, Onboarding.bgDeep.copy(alpha = 0.92f)),
+            startY = size.height * 0.34f,
+            endY = size.height,
         ),
     )
 }
@@ -59,14 +68,7 @@ internal fun Modifier.onboardingBackground(): Modifier = drawBehind {
 internal fun Modifier.onboardingSurface(): Modifier = fillMaxSize().onboardingBackground()
 
 /**
- * Pill tint derived locally from the lifecycle. The Android [SessionLifecycle] only exposes
- * `.label` + `.isActive` (no `.tint`, unlike iOS), so we map the case → accent here.
+ * Kept as a screen-level compatibility helper; the canonical semantic mapping lives in
+ * [SessionLifecycle.tint].
  */
-internal fun SessionLifecycle.pillTint(): Color = when (this) {
-    SessionLifecycle.Running -> Brand.accent
-    SessionLifecycle.AwaitingPermission -> Color(0xFFFFB020)   // attention amber
-    SessionLifecycle.AwaitingInput -> Color(0xFFFFB020)
-    SessionLifecycle.Done -> Color(0xFF34C759)                 // success green
-    SessionLifecycle.Idle -> ChatPalette.secondaryText
-    is SessionLifecycle.Error -> Brand.danger
-}
+internal fun SessionLifecycle.pillTint(): Color = tint

@@ -6,4 +6,13 @@
         <item name="android:statusBarColor">@android:color/black</item>
         <item name="android:navigationBarColor">@android:color/black</item>
     </style>
+
+    <!-- Native time picker kept inside the app's monochrome visual system. -->
+    <style name="Theme.AgenC.TimePicker" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">#111111</item>
+        <item name="android:colorAccent">#FFFFFF</item>
+        <item name="android:textColorPrimary">#FFFFFF</item>
+        <item name="android:textColorSecondary">#A3A3A3</item>
+        <item name="android:navigationBarColor">#000000</item>
+    </style>
 </resources>

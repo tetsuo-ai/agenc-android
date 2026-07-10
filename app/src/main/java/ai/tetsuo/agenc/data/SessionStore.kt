@@ -12,12 +12,42 @@ import ai.tetsuo.agenc.model.ToolKind
 import ai.tetsuo.agenc.model.ToolStatus
 import ai.tetsuo.agenc.model.TokenUsage
 import ai.tetsuo.agenc.model.TranscriptItem
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.withContext
 import java.util.UUID
+
+/** Separates an authoritative empty transcript from one that has not arrived yet. */
+enum class HistoryLoadState {
+    Uninitialized,
+    Cached,
+    Loading,
+    Ready,
+    Failed,
+}
+
+/** Pure financial-row reducer used by the store and JVM contract tests. */
+internal fun appendCoreValidatedLedgerTransfer(
+    items: MutableList<TranscriptItem>,
+    toolName: String?,
+    isError: Boolean,
+    result: ai.tetsuo.agenc.model.LedgerTransferResult?,
+): Boolean {
+    if (isError || toolName != "request_ledger_transfer" || result == null) return false
+    val existing = items.firstOrNull {
+        it is TranscriptItem.LedgerTransfer && it.result.intentId == result.intentId
+    } as? TranscriptItem.LedgerTransfer
+    if (existing != null) {
+        // Exact replay is a no-op; a conflicting same-intent result also fails closed.
+        return false
+    }
+    items.add(TranscriptItem.LedgerTransfer(result))
+    return true
+}
 
 /**
  * Direct port of the iOS app's SessionStore.swift — the streaming brain.
@@ -66,6 +96,9 @@ class SessionStore(
     private val _thinkingDurations = MutableStateFlow<Map<String, Int>>(emptyMap())
     val thinkingDurations: StateFlow<Map<String, Int>> = _thinkingDurations.asStateFlow()
 
+    private val _historyState = MutableStateFlow(HistoryLoadState.Uninitialized)
+    val historyState: StateFlow<HistoryLoadState> = _historyState.asStateFlow()
+
     // --- Mutable working copies (the StateFlows mirror these snapshots) ---
     private val itemsList = mutableListOf<TranscriptItem>()
 
@@ -87,10 +120,7 @@ class SessionStore(
     private var currentTurnThinkingIndex: Int? = null
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-
-    init {
-        loadPersisted() // restore the transcript so reopening a chat keeps its history
-    }
+    private var persistedLoadAttempted = false
 
     // MARK: Ingestion
 
@@ -136,6 +166,7 @@ class SessionStore(
                 thinkingBuffer = ""; assistantBuffer = ""
                 currentTurnToolGroupIndex = null; currentTurnThinkingIndex = null
                 currentThinkingStart = null; currentThinkingId = null
+                _lifecycle.value = SessionLifecycle.Running
                 itemsList.add(TranscriptItem.User(msgId = UUID.randomUUID().toString(), text = msg.text))
             }
 
@@ -195,10 +226,19 @@ class SessionStore(
 
             is EventMsg.ToolProgress -> mutateCard(msg.callId) { it.output += msg.chunk }
 
-            is EventMsg.ToolCallCompleted -> mutateCard(msg.callId) {
-                it.status = if (msg.isError) ToolStatus.error else ToolStatus.success
-                it.resultPreview = msg.result
-                it.diff = msg.diff
+            is EventMsg.ToolCallCompleted -> {
+                val completedToolName = toolNameForCall(msg.callId)
+                mutateCard(msg.callId) {
+                    it.status = if (msg.isError) ToolStatus.error else ToolStatus.success
+                    it.resultPreview = msg.result
+                    it.diff = msg.diff
+                }
+                appendCoreValidatedLedgerTransfer(
+                    items = itemsList,
+                    toolName = completedToolName,
+                    isError = msg.isError,
+                    result = msg.ledgerResult,
+                )
             }
 
             is EventMsg.TokenCount -> {
@@ -226,6 +266,7 @@ class SessionStore(
                 )
 
             is EventMsg.SessionConfigured -> {
+                _historyState.value = HistoryLoadState.Ready
                 // Replay on attach/reconnect. Only SEED an empty transcript — never wipe one we have.
                 if (itemsList.isNotEmpty() || msg.initialMessages.isEmpty()) return
                 assistantBuffer = ""
@@ -245,18 +286,26 @@ class SessionStore(
 
             is EventMsg.TurnComplete -> {
                 freezeThinkingDuration()
+                _pendingPermission.value = null
+                _pendingElicitation.value = null
                 msg.last?.takeIf { it.isNotEmpty() }?.let { upsertAssistant(it) }
                 _lifecycle.value = SessionLifecycle.Done
             }
 
             is EventMsg.TurnAborted -> {
                 freezeThinkingDuration()
+                _pendingPermission.value = null
+                _pendingElicitation.value = null
                 _lifecycle.value =
                     if (msg.reason.contains("interrupt")) SessionLifecycle.Done
                     else SessionLifecycle.Error(msg.reason)
             }
 
-            is EventMsg.Error -> _lifecycle.value = SessionLifecycle.Error(msg.message)
+            is EventMsg.Error -> {
+                _pendingPermission.value = null
+                _pendingElicitation.value = null
+                _lifecycle.value = SessionLifecycle.Error(msg.message)
+            }
 
             is EventMsg.Unknown -> Unit // forward-compat: never crash on a new variant
         }
@@ -264,22 +313,32 @@ class SessionStore(
 
     // MARK: Client → daemon replies (UI hooks; the live transactions are driven by DaemonHub)
 
-    /** Mirrors tool.approve{scope}. */
-    fun approve(scope: String) {
+    /** Reflect an authoritative running status without synthesizing a transcript event. */
+    @Synchronized
+    fun markRunning() {
+        _lifecycle.value = SessionLifecycle.Running
+    }
+
+    /** A stopped/interrupted daemon run is terminal, but it is not a successful turn completion. */
+    @Synchronized
+    fun markStopped() {
+        freezeThinkingDuration()
+        _pendingPermission.value = null
+        _pendingElicitation.value = null
+        _lifecycle.value = SessionLifecycle.Idle
+    }
+
+    /** Resolve only the request that the daemon acknowledged; never dismiss a newer prompt. */
+    @Synchronized
+    fun resolvePermission(requestId: String) {
+        if (_pendingPermission.value?.id != requestId) return
         _pendingPermission.value = null
         _lifecycle.value = SessionLifecycle.Running
     }
 
-    /**
-     * LIVE deny: the daemon drives what happens after tool.deny (the agent gets the denial and
-     * continues its turn), so just dismiss the prompt and wait for the agent's real response.
-     */
-    fun clearPendingPermission() {
-        _pendingPermission.value = null
-        _lifecycle.value = SessionLifecycle.Running
-    }
-
-    fun respond(optionId: String) {
+    @Synchronized
+    fun resolveElicitation(requestId: String) {
+        if (_pendingElicitation.value?.id != requestId) return
         _pendingElicitation.value = null
         _lifecycle.value = SessionLifecycle.Running
     }
@@ -287,9 +346,82 @@ class SessionStore(
     /** Read-only snapshot for callers that need the current item list synchronously (e.g. attach). */
     fun currentItems(): List<TranscriptItem> = _items.value
 
+    /**
+     * Decode the potentially large local cache away from the Compose/main thread. The first chat
+     * frame can therefore start its destination transition immediately instead of waiting for JSON.
+     */
+    suspend fun loadPersistedIfNeeded() = withContext(Dispatchers.Default) {
+        synchronized(this@SessionStore) {
+            if (persistedLoadAttempted) return@synchronized
+            persistedLoadAttempted = true
+            if (itemsList.isNotEmpty() || _historyState.value == HistoryLoadState.Ready) return@synchronized
+            _historyState.value = HistoryLoadState.Loading
+            _historyState.value = if (loadPersisted()) {
+                HistoryLoadState.Cached
+            } else {
+                HistoryLoadState.Uninitialized
+            }
+        }
+    }
+
+    @Synchronized
+    fun markHistoryLoading() {
+        _historyState.value = HistoryLoadState.Loading
+    }
+
+    @Synchronized
+    fun markHistoryReady() {
+        _historyState.value = HistoryLoadState.Ready
+    }
+
+    @Synchronized
+    fun markHistoryFailed() {
+        _historyState.value = HistoryLoadState.Failed
+    }
+
+    /**
+     * Apply an already-confirmed Core conversation rewind to the rendered transcript.
+     *
+     * Core addresses prompts by their zero-based ordinal inside the active history (the portion
+     * after the latest compaction boundary). Verify both that ordinal and our stable local message
+     * id before mutating anything, so a delayed edit response can never truncate the wrong turn.
+     */
+    @Synchronized
+    fun rewindBeforeUserMessage(messageId: String, expectedOrdinal: Int): Boolean {
+        val activeStart = itemsList.indexOfLast { it is TranscriptItem.Divider } + 1
+        val activeUserIndexes = itemsList.indices.filter { index ->
+            index >= activeStart && itemsList[index] is TranscriptItem.User
+        }
+        val targetIndex = activeUserIndexes.getOrNull(expectedOrdinal) ?: return false
+        val target = itemsList[targetIndex] as? TranscriptItem.User ?: return false
+        if (target.msgId != messageId) return false
+
+        val removedIds = itemsList.subList(targetIndex, itemsList.size)
+            .mapTo(mutableSetOf()) { it.id }
+        itemsList.subList(targetIndex, itemsList.size).clear()
+        durations.keys.removeAll(removedIds)
+
+        assistantBuffer = ""
+        thinkingBuffer = ""
+        currentTurnId = null
+        currentTurnToolGroupIndex = null
+        currentTurnThinkingIndex = null
+        currentThinkingStart = null
+        currentThinkingId = null
+        _thinkingDurations.value = durations.toMap()
+        _pendingPermission.value = null
+        _pendingElicitation.value = null
+        _lifecycle.value = SessionLifecycle.Idle
+        publishItems()
+        _revision.value = _revision.value + 1
+        savePersisted()
+        return true
+    }
+
     /** Demo: replace the whole transcript with a fixed seed conversation (role,text) and persist it. */
     @Synchronized
     fun reseed(messages: List<Pair<String, String>>) {
+        persistedLoadAttempted = true
         itemsList.clear(); seenEventIds.clear(); durations.clear()
         assistantBuffer = ""; thinkingBuffer = ""; currentTurnId = null; lastSeq = -1
         currentTurnToolGroupIndex = null; currentTurnThinkingIndex = null
@@ -303,6 +435,7 @@ class SessionStore(
         _lifecycle.value = SessionLifecycle.Idle
         _pendingPermission.value = null
         _pendingElicitation.value = null
+        _historyState.value = HistoryLoadState.Ready
         publishItems()
         savePersisted()
     }
@@ -366,6 +499,18 @@ class SessionStore(
         }
     }
 
+    private fun toolNameForCall(callId: String): String? {
+        for (item in itemsList) {
+            if (item is TranscriptItem.Tool && item.card.callId == callId) {
+                return item.card.toolName
+            }
+            if (item is TranscriptItem.ToolGroup) {
+                item.cards.firstOrNull { it.callId == callId }?.let { return it.toolName }
+            }
+        }
+        return null
+    }
+
     // MARK: Persistence — keep the transcript across close + relaunch (keyed by session id)
 
     private val persistKey: String get() = Prefs.transcriptKey(id)
@@ -393,6 +538,12 @@ class SessionStore(
                     out.add(PersistedMsg(role = "assistant", text = item.text))
                 is TranscriptItem.Tool -> out.add(toolMsg(item.card))
                 is TranscriptItem.ToolGroup -> out.addAll(item.cards.map { toolMsg(it) })
+                is TranscriptItem.LedgerTransfer -> out.add(
+                    PersistedMsg(
+                        role = "ledger_transfer",
+                        ledgerResult = item.result.toJson(),
+                    ),
+                )
                 // Voice (demo) is ephemeral; thinking/divider aren't persisted either.
                 is TranscriptItem.Voice, is TranscriptItem.Thinking, is TranscriptItem.Divider -> Unit
             }
@@ -407,17 +558,27 @@ class SessionStore(
         prefs.setString(persistKey, data)
     }
 
-    private fun loadPersisted() {
-        val raw = prefs.getString(persistKey) ?: return
+    private fun loadPersisted(): Boolean {
+        val raw = prefs.getString(persistKey) ?: return false
         val msgs = runCatching {
             json.decodeFromString(persistedMsgSerializer, raw)
-        }.getOrNull()?.takeIf { it.isNotEmpty() } ?: return
+        }.getOrNull()?.takeIf { it.isNotEmpty() } ?: return false
 
         val rebuilt = mutableListOf<TranscriptItem>()
         for (m in msgs) {
             when (m.role) {
                 "assistant" ->
                     rebuilt.add(TranscriptItem.Assistant(UUID.randomUUID().toString(), m.text))
+                "ledger_transfer" ->
+                    ai.tetsuo.agenc.model.LedgerTransferResult.parse(m.ledgerResult)?.let { result ->
+                        if (rebuilt.none { item ->
+                                item is TranscriptItem.LedgerTransfer &&
+                                    item.result.intentId == result.intentId
+                            }
+                        ) {
+                            rebuilt.add(TranscriptItem.LedgerTransfer(result))
+                        }
+                    }
                 "tool" -> {
                     val card = ToolCardState(
                         callId = UUID.randomUUID().toString(),
@@ -445,5 +606,7 @@ class SessionStore(
         itemsList.addAll(rebuilt)
         publishItems()
         _lifecycle.value = SessionLifecycle.Done
+        return true
     }
+
 }

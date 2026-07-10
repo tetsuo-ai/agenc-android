@@ -1,7 +1,13 @@
 package ai.tetsuo.agenc.ui.screens
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,30 +16,27 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.automirrored.outlined.Chat
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -43,40 +46,44 @@ import ai.tetsuo.agenc.model.SessionLifecycle
 import ai.tetsuo.agenc.model.SessionSummary
 import ai.tetsuo.agenc.model.Tier
 import ai.tetsuo.agenc.ui.AgenCTheme
-import ai.tetsuo.agenc.ui.Brand
+import ai.tetsuo.agenc.ui.HapticCue
+import ai.tetsuo.agenc.ui.rememberAgenCHaptics
 
 /** The three top-level destinations: passwordless login → pair a computer → the main app. */
 enum class AppRoute { Login, Pairing, Main }
 
-/** Within [AppRoute.Main], which screen the floating tab bar is showing. */
+/** Within [AppRoute.Main], which destination the bottom navigation is showing. */
 enum class MainTab { Home, Sessions, Account }
+
+/** Small UI projection of the daemon link; keeps transport details out of the screen layer. */
+enum class ConnectionStatus { Connected, Connecting, Offline }
 
 /**
  * The top-level switch — the Android port of the iOS `RootView` swap logic.
  *
- * The Login and Pairing routes are fully stateless. The Main route hosts an internal-state floating
- * tab bar (Home / Sessions / Account) seeded from [mainTab]; once inside Main, the tab is owned here
- * so the bottom bar feels instant. The host's [onOpenAccount] still jumps to the Account tab when it
- * needs to (e.g. a header shortcut).
+ * The Login and Pairing routes are fully stateless. The Main route renders the host-owned [mainTab]
+ * so the selected destination survives temporary Chat and Ledger overlays.
  *
  * Auth/pairing state:
  * @param deviceCode device-flow code for [LoginScreen] (null until issued).
  * @param isLoading login-in-flight flag for [LoginScreen].
  * @param loginError error for [LoginScreen].
  * @param onStartLogin Sign-in tap on [LoginScreen]; carries the optional identifier (null here).
+ * @param onCancelLogin cancels the active device-flow poll.
  *
  * @param machineName linked computer name for [PairingScreen] (null until linked).
  * @param isLinking claim-in-flight flag for [PairingScreen].
  * @param pairingError error for [PairingScreen].
  * @param onClaimCode Connect tap on [PairingScreen]; carries the normalized code.
  * @param onScanQr Scan-QR tap on [PairingScreen].
+ * @param pairingInitialCode a deep-link code to prefill for explicit user confirmation.
  *
  * Main state:
- * @param mainTab the initial main tab (the floating bar takes over once mounted).
+ * @param mainTab the selected main tab.
  * @param sessions the session list for Home + Sessions.
  * @param onOpenSession row tap.
  * @param onNewChat compose action.
- * @param onOpenAccount jump-to-account hook (kept for host compatibility).
+ * @param onMainTabChange updates the single host-owned tab state.
  * @param identity the account identity for [AccountScreen].
  * @param onLogout logout tap on [AccountScreen].
  */
@@ -88,22 +95,28 @@ fun RootNav(
     isLoading: Boolean,
     loginError: String?,
     onStartLogin: (identifier: String?) -> Unit,
+    onCancelLogin: () -> Unit = {},
     // Pairing
     machineName: String?,
     isLinking: Boolean,
     pairingError: String?,
     onClaimCode: (String) -> Unit,
     onScanQr: () -> Unit,
+    pairingInitialCode: String? = null,
     // Main
     mainTab: MainTab,
+    connectionStatus: ConnectionStatus = ConnectionStatus.Offline,
     sessions: List<SessionSummary>,
+    sessionsQuery: String = "",
+    onSessionsQueryChange: (String) -> Unit = {},
     onOpenSession: (SessionSummary) -> Unit,
     onNewChat: () -> Unit,
-    @Suppress("UNUSED_PARAMETER") onOpenAccount: () -> Unit,
+    onMainTabChange: (MainTab) -> Unit,
     identity: Identity?,
     onLogout: () -> Unit,
     mutedSessions: Set<String> = emptySet(),
     onToggleMute: (String) -> Unit = {},
+    onDeleteSession: suspend (String) -> Result<Unit> = { Result.success(Unit) },
     onOpenLedger: (() -> Unit)? = null,
 ) {
     when (route) {
@@ -112,6 +125,7 @@ fun RootNav(
             isLoading = isLoading,
             error = loginError,
             onStart = onStartLogin,
+            onCancel = onCancelLogin,
         )
 
         AppRoute.Pairing -> PairingScreen(
@@ -120,159 +134,227 @@ fun RootNav(
             error = pairingError,
             onClaimCode = onClaimCode,
             onScanQr = onScanQr,
+            initialCode = pairingInitialCode,
         )
 
         AppRoute.Main -> MainShell(
-            initialTab = mainTab,
+            selectedTab = mainTab,
+            onTabChange = onMainTabChange,
+            connectionStatus = connectionStatus,
             sessions = sessions,
+            sessionsQuery = sessionsQuery,
+            onSessionsQueryChange = onSessionsQueryChange,
             onOpenSession = onOpenSession,
             onNewChat = onNewChat,
             identity = identity,
             onLogout = onLogout,
             mutedSessions = mutedSessions,
             onToggleMute = onToggleMute,
+            onDeleteSession = onDeleteSession,
             onOpenLedger = onOpenLedger,
         )
     }
 }
 
 /**
- * The signed-in shell: the selected tab is INTERNAL state, the floating bottom navigation bar
- * (Home / Sessions / Account) switches it, and the content fills the area beneath. Follows the
- * system light/dark appearance.
+ * The signed-in shell: the host owns the selected tab so opening an overlay cannot reset it.
  */
 @Composable
 private fun MainShell(
-    initialTab: MainTab,
+    selectedTab: MainTab,
+    onTabChange: (MainTab) -> Unit,
+    connectionStatus: ConnectionStatus,
     sessions: List<SessionSummary>,
+    sessionsQuery: String,
+    onSessionsQueryChange: (String) -> Unit,
     onOpenSession: (SessionSummary) -> Unit,
     onNewChat: () -> Unit,
     identity: Identity?,
     onLogout: () -> Unit,
     mutedSessions: Set<String>,
     onToggleMute: (String) -> Unit,
+    onDeleteSession: suspend (String) -> Result<Unit>,
     onOpenLedger: (() -> Unit)? = null,
 ) {
-    var tab by remember { mutableStateOf(initialTab) }
-    val colors = MaterialTheme.colorScheme
+    val tabStateHolder = rememberSaveableStateHolder()
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(colors.background),
-    ) {
-        // Content for the selected tab.
-        when (tab) {
-            MainTab.Home -> HomeScreen(
-                sessions = sessions,
-                onNewChat = onNewChat,
-                onOpen = onOpenSession,
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = MainPalette.canvas,
+        bottomBar = {
+            BottomNavigationBar(
+                selected = selectedTab,
+                onSelect = onTabChange,
             )
-
-            MainTab.Sessions -> SessionsScreen(
-                sessions = sessions,
-                onOpen = onOpenSession,
-                onNewChat = onNewChat,
-                onAccount = { tab = MainTab.Account },
-                mutedSessions = mutedSessions,
-                onToggleMute = onToggleMute,
-            )
-
-            MainTab.Account -> AccountScreen(
-                identity = identity,
-                onLogout = onLogout,
-                onOpenLedger = onOpenLedger,
-            )
-        }
-
-        // Floating bottom navigation bar.
-        FloatingTabBar(
-            selected = tab,
-            onSelect = { tab = it },
+        },
+    ) { innerPadding ->
+        Box(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(horizontal = 40.dp, vertical = 12.dp),
-        )
+                .fillMaxSize()
+                .background(MainPalette.canvas)
+                .padding(bottom = innerPadding.calculateBottomPadding()),
+        ) {
+            Crossfade(
+                targetState = selectedTab,
+                modifier = Modifier.fillMaxSize(),
+                animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+                label = "main-tab-content",
+            ) { tab ->
+                tabStateHolder.SaveableStateProvider(tab.name) {
+                    when (tab) {
+                        MainTab.Home -> HomeScreen(
+                            sessions = sessions,
+                            connectionStatus = connectionStatus,
+                            onNewChat = onNewChat,
+                            onOpen = onOpenSession,
+                        )
+
+                        MainTab.Sessions -> SessionsScreen(
+                            sessions = sessions,
+                            query = sessionsQuery,
+                            onQueryChange = onSessionsQueryChange,
+                            onOpen = onOpenSession,
+                            onNewChat = onNewChat,
+                            onAccount = { onTabChange(MainTab.Account) },
+                            mutedSessions = mutedSessions,
+                            onToggleMute = onToggleMute,
+                            onDeleteSession = onDeleteSession,
+                        )
+
+                        MainTab.Account -> AccountScreen(
+                            identity = identity,
+                            onLogout = onLogout,
+                            onOpenLedger = onOpenLedger,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
-/** A floating, rounded three-tab bar: Home / Sessions / Account. Selected tab is tinted purple. */
+/** Edge-to-edge typographic navigation: no icon container and no Material ripple overlay. */
 @Composable
-private fun FloatingTabBar(
+private fun BottomNavigationBar(
     selected: MainTab,
     onSelect: (MainTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val colors = MaterialTheme.colorScheme
-    Row(
+    Column(
         modifier = modifier
-            .shadow(12.dp, RoundedCornerShape(32.dp), clip = false)
-            .background(colors.surface, RoundedCornerShape(32.dp))
-            .padding(horizontal = 8.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .fillMaxWidth()
+            .background(MainPalette.canvas)
+            .navigationBarsPadding(),
     ) {
-        TabItem(
-            label = "Home",
-            selectedIcon = Icons.Filled.Home,
-            unselectedIcon = Icons.Outlined.Home,
-            isSelected = selected == MainTab.Home,
-            onClick = { onSelect(MainTab.Home) },
-            modifier = Modifier.weight(1f),
-        )
-        TabItem(
-            label = "Sessions",
-            selectedIcon = Icons.AutoMirrored.Filled.Chat,
-            unselectedIcon = Icons.AutoMirrored.Outlined.Chat,
-            isSelected = selected == MainTab.Sessions,
-            onClick = { onSelect(MainTab.Sessions) },
-            modifier = Modifier.weight(1f),
-        )
-        TabItem(
-            label = "Account",
-            selectedIcon = Icons.Filled.Person,
-            unselectedIcon = Icons.Outlined.Person,
-            isSelected = selected == MainTab.Account,
-            onClick = { onSelect(MainTab.Account) },
-            modifier = Modifier.weight(1f),
-        )
+        HorizontalDivider(thickness = 1.dp, color = MainPalette.lineSoft)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectableGroup()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TabItem(
+                index = "01",
+                label = "Home",
+                isSelected = selected == MainTab.Home,
+                onClick = { onSelect(MainTab.Home) },
+                modifier = Modifier.weight(1f),
+            )
+            TabItem(
+                index = "02",
+                label = "Sessions",
+                isSelected = selected == MainTab.Sessions,
+                onClick = { onSelect(MainTab.Sessions) },
+                modifier = Modifier.weight(1f),
+            )
+            TabItem(
+                index = "03",
+                label = "Account",
+                isSelected = selected == MainTab.Account,
+                onClick = { onSelect(MainTab.Account) },
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 
 @Composable
 private fun TabItem(
+    index: String,
     label: String,
-    selectedIcon: ImageVector,
-    unselectedIcon: ImageVector,
     isSelected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val colors = MaterialTheme.colorScheme
-    val tint = if (isSelected) Brand.accent else colors.onSurface
-    val chip = if (isSelected) Brand.accent.copy(alpha = 0.12f) else Color.Transparent
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val showIndex = LocalDensity.current.fontScale < 1.5f
+    val haptics = rememberAgenCHaptics()
+    val tint by animateColorAsState(
+        targetValue = if (isSelected) MainPalette.ink else MainPalette.quiet,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "bottom-nav-tint",
+    )
+    val indicator by animateColorAsState(
+        targetValue = if (isSelected) MainPalette.ink else Color.Transparent,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "bottom-nav-indicator",
+    )
+    val pressedAlpha by animateFloatAsState(
+        targetValue = if (isPressed) .72f else 1f,
+        animationSpec = tween(durationMillis = 100, easing = FastOutSlowInEasing),
+        label = "bottom-nav-press",
+    )
     Column(
         modifier = modifier
-            .clickable(onClick = onClick)
-            .background(chip, RoundedCornerShape(24.dp))
-            .padding(vertical = 8.dp),
+            .heightIn(min = 60.dp)
+            .selectable(
+                selected = isSelected,
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = true,
+                role = Role.Tab,
+                onClick = {
+                    if (!isSelected) {
+                        haptics.perform(HapticCue.Selection)
+                        onClick()
+                    }
+                },
+            )
+            .alpha(pressedAlpha)
+            .padding(horizontal = 4.dp, vertical = 7.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            imageVector = if (isSelected) selectedIcon else unselectedIcon,
-            contentDescription = label,
-            tint = tint,
-            modifier = Modifier.size(24.dp),
+        Box(
+            modifier = Modifier
+                .width(28.dp)
+                .height(2.dp)
+                .background(indicator),
         )
-        Spacer(Modifier.height(3.dp))
-        Text(
-            text = label,
-            color = tint,
-            fontSize = 11.sp,
-            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (showIndex) {
+                Text(
+                    text = index,
+                    color = tint.copy(alpha = if (isSelected) .68f else .78f),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = .4.sp,
+                    modifier = Modifier.clearAndSetSemantics { },
+                )
+                Spacer(Modifier.width(7.dp))
+            }
+            Text(
+                text = label.uppercase(),
+                color = tint,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = .65.sp,
+            )
+        }
     }
 }
 
@@ -295,7 +377,7 @@ private fun RootNavLoginPreview() {
             sessions = emptyList(),
             onOpenSession = {},
             onNewChat = {},
-            onOpenAccount = {},
+            onMainTabChange = {},
             identity = null,
             onLogout = {},
         )
@@ -321,7 +403,7 @@ private fun RootNavPairingPreview() {
             sessions = emptyList(),
             onOpenSession = {},
             onNewChat = {},
-            onOpenAccount = {},
+            onMainTabChange = {},
             identity = null,
             onLogout = {},
         )
@@ -347,7 +429,7 @@ private fun RootNavMainPreview() {
             sessions = emptyList(),
             onOpenSession = {},
             onNewChat = {},
-            onOpenAccount = {},
+            onMainTabChange = {},
             identity = Identity(displayName = "Pavel C.", handle = "@pavel", tier = Tier.pro),
             onLogout = {},
         )
@@ -382,7 +464,7 @@ private fun RootNavHomePreview() {
             ),
             onOpenSession = {},
             onNewChat = {},
-            onOpenAccount = {},
+            onMainTabChange = {},
             identity = Identity(displayName = "Pavel C.", handle = "@pavel", tier = Tier.pro),
             onLogout = {},
         )

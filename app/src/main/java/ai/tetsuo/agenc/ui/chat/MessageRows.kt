@@ -1,83 +1,128 @@
 package ai.tetsuo.agenc.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.tetsuo.agenc.model.TranscriptItem
+import ai.tetsuo.agenc.model.LedgerTransferResult
+import ai.tetsuo.agenc.model.LedgerTransferStatus
 import ai.tetsuo.agenc.ui.AgenCTheme
-import ai.tetsuo.agenc.ui.Brand
 import ai.tetsuo.agenc.ui.ChatPalette
+import kotlinx.coroutines.delay
+import java.math.BigDecimal
 
-/**
- * Renders one display [TranscriptItem]. Mirrors the iOS `TranscriptRow` switch — but only the
- * user-visible cases reach here: tool / toolGroup / divider are filtered out upstream by
- * [forDisplay] (the thinking row shows the work, command cards are hidden).
- *
- * Stateless: [streaming] and [thinkingSeconds] are computed by the caller from lifecycle.
- */
+/** One bounded initial-history animation. Stable keys prevent streaming updates from replaying it. */
+internal data class MessageRevealMotion(
+    val batchKey: String,
+    val delayMillis: Int,
+)
+
+/** Renders one user-visible transcript item. Tool cards and dividers are filtered upstream. */
 @Composable
-fun MessageRow(
+internal fun MessageRow(
     item: TranscriptItem,
     streaming: Boolean,
-    thinkingSeconds: Int?,
     thinkingLive: Boolean = true,
     reduceMotion: Boolean = false,
+    animateEntry: Boolean = false,
+    userMessageOrdinal: Int? = null,
+    editUserMessageEnabled: Boolean = false,
+    onEditUserMessage: (MessageEditDraft) -> Unit = {},
+    revealMotion: MessageRevealMotion? = null,
     modifier: Modifier = Modifier,
 ) {
+    // Allocate animators only for the six restored tail rows selected by ChatScreen. Every other
+    // row stays a plain modifier, so opening a transcript with thousands of messages remains cheap.
+    val rowModifier = if (revealMotion != null && !reduceMotion) {
+        val revealProgress = remember(item.id, revealMotion.batchKey) { Animatable(0f) }
+        LaunchedEffect(item.id, revealMotion.batchKey) {
+            revealProgress.snapTo(0f)
+            delay(revealMotion.delayMillis.toLong())
+            revealProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = 180,
+                    easing = FastOutSlowInEasing,
+                ),
+            )
+        }
+        modifier.graphicsLayer {
+            alpha = revealProgress.value
+            translationY = (1f - revealProgress.value) * 6.dp.toPx()
+        }
+    } else {
+        modifier
+    }
+
     when (item) {
-        is TranscriptItem.User -> UserBubble(item.text, modifier)
-        is TranscriptItem.Voice -> VoiceBubble(item.seconds, item.transcript, modifier)
-        is TranscriptItem.Assistant -> AssistantText(item.text, streaming, reduceMotion, modifier)
-        is TranscriptItem.Thinking ->
-            ThinkingRow(item.text, thinkingSeconds, thinkingLive, reduceMotion, modifier)
-        // Hidden categories — never reach here once items pass through forDisplay(), but render
-        // nothing defensively so the composable stays total.
+        is TranscriptItem.User -> UserBubble(
+            text = item.text,
+            modifier = rowModifier,
+            animateEntry = animateEntry,
+            reduceMotion = reduceMotion,
+            editEnabled = editUserMessageEnabled && userMessageOrdinal != null,
+            onEdit = userMessageOrdinal?.let { ordinal ->
+                {
+                    onEditUserMessage(
+                        MessageEditDraft(
+                            messageOrdinal = ordinal,
+                            messageId = item.msgId,
+                            text = item.text,
+                        ),
+                    )
+                }
+            },
+        )
+        is TranscriptItem.Voice -> VoiceBubble(item.seconds, item.transcript, rowModifier)
+        is TranscriptItem.Assistant -> AssistantText(item.text, streaming, reduceMotion, rowModifier)
+        is TranscriptItem.Thinking -> ThinkingRow(thinkingLive, reduceMotion, rowModifier)
+        is TranscriptItem.LedgerTransfer -> LedgerTransferRow(item.result, rowModifier)
         is TranscriptItem.Tool,
         is TranscriptItem.ToolGroup,
         is TranscriptItem.Divider,
@@ -85,213 +130,278 @@ fun MessageRow(
     }
 }
 
-/**
- * A user voice message: a right-aligned accent bubble with a play button, a static waveform, and
- * the clip duration, plus a small transcript caption underneath. Playback is cosmetic (demo).
- */
+private val LedgerViolet = Color(0xFFB69CFF)
+private val LedgerSurface = Color(0xFF171022)
+private val LedgerOutline = Color(0xFF4B3671)
+
+internal fun ledgerTransferAmountLabel(lamports: String): String =
+    "${BigDecimal(lamports).movePointLeft(9).stripTrailingZeros().toPlainString()} SOL"
+
+internal fun ledgerTransferStatusLabel(result: LedgerTransferResult): String =
+    when (result.status) {
+        LedgerTransferStatus.Submitted -> "Submitted"
+        LedgerTransferStatus.Cancelled -> "Cancelled"
+    }
+
+private fun shortLedgerValue(value: String): String =
+    if (value.length <= 16) value else "${value.take(7)}…${value.takeLast(7)}"
+
+/** Core-validated Ledger result. `Submitted` is deliberately never presented as confirmed/final. */
 @Composable
-fun VoiceBubble(seconds: Int, transcript: String, modifier: Modifier = Modifier) {
-    // A fixed, natural-looking waveform (heights in dp) so the bubble reads as a real audio clip.
-    val bars = listOf(6, 11, 16, 9, 20, 13, 7, 17, 22, 12, 8, 15, 19, 10, 6, 14, 21, 9, 13, 7)
-    Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
-        Row(
+private fun LedgerTransferRow(result: LedgerTransferResult, modifier: Modifier = Modifier) {
+    val status = ledgerTransferStatusLabel(result)
+    val amount = ledgerTransferAmountLabel(result.lamports)
+    val copyValue = result.signature ?: result.toJson()
+    MessageActions(
+        text = copyValue,
+        copyDescription = if (result.signature == null) "Copy Ledger result" else "Copy signature",
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
             modifier = Modifier
-                .background(Brand.accent, RoundedCornerShape(22.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                .fillMaxWidth()
+                .semantics {
+                    contentDescription = "Ledger transfer $status, $amount"
+                }
+                .background(LedgerSurface, RoundedCornerShape(18.dp))
+                .border(1.dp, LedgerOutline, RoundedCornerShape(18.dp))
+                .padding(horizontal = 15.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Box(
-                modifier = Modifier.size(30.dp).background(Color.White.copy(alpha = 0.22f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Filled.PlayArrow, contentDescription = "Play voice message",
-                    tint = Color.White, modifier = Modifier.size(18.dp),
-                )
-            }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                for (h in bars) {
-                    Box(
-                        modifier = Modifier
-                            .width(2.5.dp)
-                            .height(h.dp)
-                            .background(Color.White.copy(alpha = 0.85f), RoundedCornerShape(2.dp)),
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(LedgerViolet.copy(alpha = 0.15f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("@", color = LedgerViolet, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(
+                        text = "LEDGER TRANSFER",
+                        color = LedgerViolet,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.9.sp,
+                    )
+                    Text(
+                        text = status,
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
                     )
                 }
             }
-            Text(
-                text = "0:%02d".format(seconds.coerceIn(1, 59)),
-                color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(amount, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    text = "to ${shortLedgerValue(result.to)}",
+                    color = ChatPalette.secondaryText,
+                    fontSize = 12.sp,
+                )
+            }
+            if (result.status == LedgerTransferStatus.Submitted) {
+                Text(
+                    text = "Submitted to Solana · awaiting confirmation",
+                    color = LedgerViolet.copy(alpha = 0.82f),
+                    fontSize = 12.sp,
+                )
+                result.signature?.let { signature ->
+                    Text(
+                        text = "Signature ${shortLedgerValue(signature)}",
+                        color = ChatPalette.secondaryText,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            } else {
+                Text(
+                    text = result.reason.orEmpty().replace('_', ' '),
+                    color = ChatPalette.secondaryText,
+                    fontSize = 12.sp,
+                )
+            }
         }
-        // No transcript caption — the voice bubble stands alone (the transcript still travels as
-        // the transfer note internally).
     }
 }
 
-/**
- * A user message: a light, near-white rounded bubble with dark text, right-aligned, capped at
- * ~78% of the screen width. No accent fill — a quiet chip, exactly like ChatGPT.
- */
+/** A user voice message. Long-press exposes Copy; there is no pretend playback or edit action. */
 @Composable
-fun UserBubble(text: String, modifier: Modifier = Modifier) {
-    val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.78f).dp
-    Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        Text(
-            text = text,
-            color = ChatPalette.userBubbleText,
-            fontSize = 15.sp,
-            modifier = Modifier
-                .widthIn(max = maxWidth)
-                .background(ChatPalette.userBubble, RoundedCornerShape(22.dp))
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-        )
+fun VoiceBubble(seconds: Int, transcript: String, modifier: Modifier = Modifier) {
+    val bars = listOf(6, 11, 16, 9, 20, 13, 7, 17, 22, 12, 8, 15, 19, 10, 6, 14, 21, 9, 13, 7)
+    Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        MessageActions(
+            text = transcript,
+            copyDescription = "Copy voice transcript",
+        ) {
+            Column(horizontalAlignment = Alignment.End) {
+                Row(
+                    modifier = Modifier
+                        .background(ChatPalette.userBubble, RoundedCornerShape(22.dp))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        for (height in bars) {
+                            Box(
+                                modifier = Modifier
+                                    .width(2.5.dp)
+                                    .height(height.dp)
+                                    .background(
+                                        ChatPalette.userBubbleText.copy(alpha = 0.72f),
+                                        RoundedCornerShape(2.dp),
+                                    ),
+                            )
+                        }
+                    }
+                    Text(
+                        text = "0:%02d".format(seconds.coerceIn(1, 59)),
+                        color = ChatPalette.userBubbleText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                if (transcript.isNotBlank()) {
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        text = transcript,
+                        color = ChatPalette.secondaryText,
+                        fontSize = 12.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
     }
 }
 
-/**
- * An assistant message: flat, full-width, no bubble/avatar.
- *
- * CRITICAL fidelity: while [streaming], render cheap PLAIN [Text] + a caret. Re-running the full
- * markdown parser on every token is O(n²) and hangs the UI on big outputs. It formats to full
- * markdown the instant the turn completes.
- */
+/** ChatGPT-like user bubble. Copy and real edit controls appear only after a long press. */
+@Composable
+fun UserBubble(
+    text: String,
+    modifier: Modifier = Modifier,
+    animateEntry: Boolean = false,
+    reduceMotion: Boolean = false,
+    editEnabled: Boolean = false,
+    onEdit: (() -> Unit)? = null,
+) {
+    val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.78f).dp
+    val risePx = with(LocalDensity.current) { 10.dp.roundToPx() }
+    val visibleState = remember {
+        MutableTransitionState(!animateEntry || reduceMotion).apply { targetState = true }
+    }
+    AnimatedVisibility(
+        visibleState = visibleState,
+        enter = fadeIn(
+            animationSpec = tween(160, easing = FastOutSlowInEasing),
+        ) + slideInVertically(
+            animationSpec = tween(210, easing = FastOutSlowInEasing),
+            initialOffsetY = { risePx },
+        ),
+    ) {
+        Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            MessageActions(
+                text = text,
+                copyDescription = "Copy your message",
+                editEnabled = editEnabled,
+                onEdit = onEdit,
+            ) {
+                Text(
+                    text = ledgerKeywordText(text),
+                    color = ChatPalette.userBubbleText,
+                    fontSize = 15.sp,
+                    modifier = Modifier
+                        .widthIn(max = maxWidth)
+                        .background(ChatPalette.userBubble, RoundedCornerShape(22.dp))
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                )
+            }
+        }
+    }
+}
+
+/** Flat assistant text. Long-press exposes Copy without a persistent action rail. */
 @Composable
 fun AssistantText(
     text: String,
     streaming: Boolean,
-    reduceMotion: Boolean = false,
+    @Suppress("UNUSED_PARAMETER") reduceMotion: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    if (streaming) {
-        Text(
-            text = "$text ▌",
-            color = Color.White,
-            fontSize = 15.sp,
-            modifier = modifier.fillMaxWidth(),
-        )
-    } else {
-        MarkdownText(text = text, modifier = modifier)
+    MessageActions(
+        text = text,
+        copyDescription = "Copy assistant message",
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        if (streaming) {
+            Text(
+                text = "$text ▌",
+                color = Color.White,
+                fontSize = 15.sp,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            // Copy uses the original source, so Markdown fences and tables survive the paste.
+            MarkdownText(text = text)
+        }
     }
 }
 
 /**
- * The reasoning row. A single lowercase line that, WHILE reasoning ([seconds] == null) and motion
- * is allowed, fills its glyphs with a rainbow gradient and slides a continuous hue sweep through
- * them so the colours shimmer in place — one smooth cycle, no blink. Once done it settles to a
- * plain gray "thought for Ns". Tapping reveals the raw reasoning text. Respects reduce-motion.
+ * Reasoning is transient chrome rather than a transcript label. Completed reasoning renders
+ * nothing; while live it reuses the quiet three-dot activity cue.
  */
 @Composable
 fun ThinkingRow(
-    text: String,
-    seconds: Int?,
     live: Boolean = true,
     reduceMotion: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    // Animate ONLY while the turn is actually in flight: without [live] a row whose duration was
-    // never frozen (e.g. restored/edge event orders) would shimmer "thinking…" forever after the
-    // answer arrived.
-    val animating = seconds == null && live && !reduceMotion
-    val headline = when {
-        seconds != null -> "thought for ${seconds}s"
-        live -> "thinking…"
-        else -> "thought"
-    }
-
-    // Continuous 0→1 phase that drives the rainbow gradient's horizontal offset.
-    val phase = if (animating) {
-        val transition = rememberInfiniteTransition(label = "thinking")
-        transition.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 2500, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart,
-            ),
-            label = "hue",
-        ).value
-    } else {
-        0f
-    }
-
-    Column(modifier = modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
+    if (live) {
+        Box(
+            modifier = modifier
                 .fillMaxWidth()
-                .clickable { expanded = !expanded },
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                .heightIn(min = 32.dp),
+            contentAlignment = Alignment.CenterStart,
         ) {
-            if (animating) {
-                // A wide rainbow brush slid by `phase` so the colours travel through the glyphs.
-                val rainbow = remember(phase) {
-                    val shift = phase * 600f
-                    Brush.linearGradient(
-                        colors = RAINBOW,
-                        start = androidx.compose.ui.geometry.Offset(-300f + shift, 0f),
-                        end = androidx.compose.ui.geometry.Offset(300f + shift, 0f),
-                    )
-                }
-                Text(
-                    text = headline,
-                    fontSize = 14.sp,
-                    style = androidx.compose.ui.text.TextStyle(brush = rainbow),
-                )
-            } else {
-                Text(headline, color = ChatPalette.secondaryText, fontSize = 14.sp)
-            }
-            Icon(
-                imageVector = if (expanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = ChatPalette.secondaryText,
-                modifier = Modifier.size(16.dp),
-            )
-        }
-        AnimatedVisibility(
-            visible = expanded,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically(),
-        ) {
-            Text(
-                text = text,
-                color = ChatPalette.secondaryText.copy(alpha = 0.75f),
-                fontSize = 13.sp,
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            )
+            TypingIndicator(reduceMotion = reduceMotion)
         }
     }
 }
 
-private val RAINBOW = listOf(
-    Color(0xFF8B5CF6), // purple
-    Color(0xFF3B82F6), // blue
-    Color(0xFF06B6D4), // cyan
-    Color(0xFF22C55E), // green
-    Color(0xFFEAB308), // yellow
-    Color(0xFFF97316), // orange
-    Color(0xFFEC4899), // pink
-    Color(0xFF8B5CF6), // purple (wrap)
-)
-
-/**
- * The three-dot "typing…" indicator shown for the brief gap before the agent produces visible
- * output. Once the thinking row or streaming text appears, the caller stops rendering this.
- */
+/** Three moving monochrome dots, or a static reduced-motion equivalent. */
 @Composable
-fun TypingIndicator(reduceMotion: Boolean = false, modifier: Modifier = Modifier) {
+fun TypingIndicator(
+    reduceMotion: Boolean = false,
+    modifier: Modifier = Modifier,
+    contentDescription: String = "Agent is thinking",
+) {
     val transition = rememberInfiniteTransition(label = "typing")
     Row(
-        modifier = modifier.padding(start = 2.dp),
+        modifier = modifier
+            .padding(start = 2.dp)
+            .semantics {
+                this.contentDescription = contentDescription
+                liveRegion = LiveRegionMode.Polite
+            },
         horizontalArrangement = Arrangement.spacedBy(5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        repeat(3) { i ->
+        repeat(3) { index ->
             val scale = if (reduceMotion) {
                 0.7f
             } else {
@@ -299,17 +409,21 @@ fun TypingIndicator(reduceMotion: Boolean = false, modifier: Modifier = Modifier
                     initialValue = 0.55f,
                     targetValue = 1f,
                     animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 550, delayMillis = i * 180, easing = LinearEasing),
+                        animation = tween(
+                            durationMillis = 550,
+                            delayMillis = index * 180,
+                            easing = LinearEasing,
+                        ),
                         repeatMode = RepeatMode.Reverse,
                     ),
-                    label = "dot$i",
+                    label = "dot$index",
                 ).value
             }
             Box(
                 modifier = Modifier
                     .size((6 * scale).dp)
                     .alpha(if (reduceMotion) 0.6f else scale)
-                    .background(Brand.accent.copy(alpha = 0.7f), CircleShape),
+                    .background(Color.White.copy(alpha = 0.72f), CircleShape),
             )
         }
     }
@@ -324,8 +438,7 @@ private fun MessageRowsPreview() {
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             UserBubble("Can you summarize what this repo does and find the bug?")
-            ThinkingRow("Let me scan the package tree and read the entry point…", seconds = null)
-            ThinkingRow("Examined the reducer and found the off-by-one.", seconds = 7)
+            ThinkingRow(live = true)
             AssistantText(
                 "Here is the summary, still streaming as tokens arrive",
                 streaming = true,
@@ -334,10 +447,6 @@ private fun MessageRowsPreview() {
                 "## Summary\nThe repo is an **AgenC** client.\n\n- It connects over JSON-RPC\n- It renders a `chat` transcript",
                 streaming = false,
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TypingIndicator()
-            }
-            // Reference LocalContentColor + TextOverflow so the imports stay meaningful in isolation.
             Text("idle", color = LocalContentColor.current, overflow = TextOverflow.Ellipsis, maxLines = 1)
         }
     }

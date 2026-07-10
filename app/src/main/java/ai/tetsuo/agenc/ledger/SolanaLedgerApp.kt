@@ -23,6 +23,56 @@ class SolanaLedgerApp(private val transport: LedgerBleTransport) {
     /** Thrown when the device answers with a non-OK status word. */
     class ApduException(val sw: Int, message: String) : IOException(message)
 
+    /** BOLOS metadata for the app currently running on the Ledger. */
+    data class AppAndVersion(
+        val name: String,
+        val version: String,
+        val flags: ByteArray? = null,
+    )
+
+    /** One common Solana derivation candidate, with stable persistence/UI identifiers. */
+    data class AccountPath(
+        val key: String,
+        val label: String,
+        val path: List<Int>,
+    )
+
+    /**
+     * DMK's GetAppAndVersion command (BOLOS CLA 0xB0 / INS 0x01). It is available both on the
+     * dashboard and inside an app, so the controller can decide whether it must close another app
+     * before opening Solana instead of blindly sending OpenApp to the wrong target.
+     */
+    suspend fun getAppAndVersion(): AppAndVersion {
+        val body = exchangeChecked(
+            byteArrayOf(CLA_BOLOS, INS_GET_APP_AND_VERSION, 0x00, 0x00, 0x00),
+        )
+        var offset = 0
+        fun nextByte(label: String): Int {
+            if (offset >= body.size) throw IOException("getAppAndVersion: missing $label")
+            return body[offset++].toInt() and 0xFF
+        }
+        fun nextField(label: String): ByteArray {
+            val length = nextByte("$label length")
+            if (offset + length > body.size) {
+                throw IOException("getAppAndVersion: truncated $label")
+            }
+            return body.copyOfRange(offset, offset + length).also { offset += length }
+        }
+
+        val format = nextByte("format")
+        if (format != 1) throw IOException("getAppAndVersion: unsupported format $format")
+        val name = nextField("app name").toString(Charsets.UTF_8)
+        val version = nextField("app version").toString(Charsets.UTF_8)
+        val flags = if (offset < body.size) nextField("flags") else null
+        if (offset != body.size) throw IOException("getAppAndVersion: trailing response bytes")
+        return AppAndVersion(name = name, version = version, flags = flags)
+    }
+
+    /** DMK's CloseApp command. A successful command intentionally resets the device session. */
+    suspend fun closeApp() {
+        exchangeChecked(byteArrayOf(CLA_BOLOS, INS_CLOSE_APP, 0x00, 0x00, 0x00))
+    }
+
     /**
      * BOLOS dashboard "open application" (INS 0xD8) — launches the named app (e.g. "Solana") so the
      * flow works even when the Flex is sitting on the dashboard. Best-effort: newer firmware opens
@@ -109,9 +159,12 @@ class SolanaLedgerApp(private val transport: LedgerBleTransport) {
 
     companion object {
         private const val CLA = 0xE0.toByte()
+        private const val CLA_BOLOS = 0xB0.toByte()
+        private const val INS_GET_APP_AND_VERSION = 0x01.toByte()
         private const val INS_GET_PUBKEY = 0x05.toByte()
         private const val INS_SIGN_MESSAGE = 0x06.toByte()
         private const val INS_OPEN_APP = 0xD8.toByte()
+        private const val INS_CLOSE_APP = 0xA7.toByte()
         private const val P1_CONFIRM = 0x01.toByte()
         private const val P2_EXTEND = 0x01
         private const val P2_MORE = 0x02
@@ -121,5 +174,65 @@ class SolanaLedgerApp(private val transport: LedgerBleTransport) {
 
         /** The user's AgenC creator account on the Flex: 44'/501'/0'/0'. */
         val DEFAULT_PATH: List<Int> = listOf(44, 501, 0, 0)
+
+        /** Stable non-secret key used to persist a derivation path. */
+        fun pathKey(path: List<Int>): String = path.joinToString("/")
+
+        /** Human-readable fully qualified hardened path. */
+        fun pathLabel(path: List<Int>): String = path.joinToString("/") { "$it'" }
+
+        /** Parse only the Solana paths this app emits; arbitrary paths are never accepted. */
+        fun pathFromKey(key: String?): List<Int>? {
+            val parts = key?.split('/')?.map { it.toIntOrNull() ?: return null } ?: return null
+            if (parts.size !in 3..4 || parts[0] != 44 || parts[1] != 501) return null
+            if (parts.drop(2).any { it !in 0..MAX_LEDGER_ACCOUNT_INDEX }) return null
+            if (parts.size == 4 && parts[2] != 0 && parts[3] != 0) return null
+            return parts
+        }
+
+        /**
+         * Bounded discovery order shared with AgenC marketplace Ledger discovery:
+         *
+         *  1. Ledger-Live-style `N/0`, [count] entries.
+         *  2. Legacy bare `N`, at least ten entries (`max(count, 10)`).
+         *  3. Alternate `0/N`, [count] entries, deduplicating `0/0` from family 1.
+         *
+         * Solana derivation space is infinite, so callers page [count] upward rather than claiming
+         * to enumerate "all" accounts. The returned list is deterministically ordered and unique.
+         */
+        fun commonAccountPaths(count: Int): List<AccountPath> {
+            require(count in 1..MAX_COMMON_ACCOUNT_COUNT) {
+                "common account count must be 1..$MAX_COMMON_ACCOUNT_COUNT"
+            }
+            val paths = LinkedHashMap<String, AccountPath>()
+            fun add(path: List<Int>) {
+                val key = pathKey(path)
+                paths.putIfAbsent(key, AccountPath(key, pathLabel(path), path))
+            }
+            repeat(count) { index -> add(listOf(44, 501, index, 0)) }
+            repeat(maxOf(count, MIN_BARE_ACCOUNT_COUNT)) { index -> add(listOf(44, 501, index)) }
+            repeat(count) { index -> add(listOf(44, 501, 0, index)) }
+            return paths.values.toList()
+        }
+
+        /** Exact account index lookup for wallets outside the fast bounded common-account scan. */
+        fun accountPathsAtIndex(index: Int): List<AccountPath> {
+            require(index in 0..MAX_LEDGER_ACCOUNT_INDEX) {
+                "Ledger account index must be 0..$MAX_LEDGER_ACCOUNT_INDEX"
+            }
+            val paths = LinkedHashMap<String, AccountPath>()
+            fun add(path: List<Int>) {
+                val key = pathKey(path)
+                paths.putIfAbsent(key, AccountPath(key, pathLabel(path), path))
+            }
+            add(listOf(44, 501, index, 0))
+            add(listOf(44, 501, index))
+            add(listOf(44, 501, 0, index))
+            return paths.values.toList()
+        }
+
+        const val MAX_COMMON_ACCOUNT_COUNT = 25
+        const val MAX_LEDGER_ACCOUNT_INDEX = 1_000_000
+        private const val MIN_BARE_ACCOUNT_COUNT = 10
     }
 }

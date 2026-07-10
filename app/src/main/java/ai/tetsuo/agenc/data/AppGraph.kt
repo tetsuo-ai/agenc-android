@@ -53,8 +53,12 @@ object AppGraph {
             prefs = Prefs(app)
             secure = SecureStore(app)
             auth = AuthManager(secure = secure, prefs = prefs)
+            // Restore the persisted relay ticket before resolving DaemonHub's initial endpoint.
+            // Otherwise MainActivity can briefly start a loopback handshake and then reconfigure
+            // to relay, producing a harmless but noisy second `initialize`/late close on phones.
+            auth.restore()
             notifications = NotificationCoordinator(app).also { it.ensureChannels() }
-            ledger = ai.tetsuo.agenc.ledger.LedgerController(app)
+            ledger = ai.tetsuo.agenc.ledger.LedgerController(app, prefs)
             hub = DaemonHub(
                 endpoint = resolveEndpoint(),
                 cookie = daemonCookie,
@@ -62,7 +66,6 @@ object AppGraph {
                 prefs = prefs,
                 notifications = notifications,
             )
-            auth.restore()
             initialized = true
         }
     }

@@ -1,5 +1,5 @@
 <!-- The "agenc" logotype, converted 1:1 from the iOS AgencWordmark.imageset/wordmark.svg.
-     White + tintable so the UI can fill it with the purple shimmer gradient like iOS. -->
+     White + tintable for dark monochrome surfaces. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="181dp"
     android:height="52dp"

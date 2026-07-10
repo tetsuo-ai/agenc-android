@@ -13,8 +13,6 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -45,14 +43,21 @@ class JsonRpcConnection(
 
     sealed class ConnError(message: String) : Exception(message) {
         data class Timeout(val method: String) : ConnError("timeout: $method")
-        data class Rpc(val code: Int, val rpcMessage: String) : ConnError("rpc $code: $rpcMessage")
+        data class Rpc(
+            val code: Int,
+            val rpcMessage: String,
+            val dataCode: String?,
+        ) : ConnError("rpc $code${dataCode?.let { "/$it" } ?: ""}: $rpcMessage")
         data object Closed : ConnError("connection closed") {
             private fun readResolve(): Any = Closed
         }
     }
 
     private val _notifications = MutableSharedFlow<Notification>(
-        replay = 0,
+        // Core may replay a capability-routed Ledger request while `initialize` is still awaiting
+        // its response. DaemonHub starts the pump immediately after that response, so retain a
+        // small connection-local window instead of dropping the privileged replay in the gap.
+        replay = 32,
         extraBufferCapacity = 256,
         onBufferOverflow = BufferOverflow.SUSPEND,
     )
@@ -61,7 +66,13 @@ class JsonRpcConnection(
     val notifications: SharedFlow<Notification> = _notifications
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val mutex = Mutex()
+    /**
+     * Response callbacks and close/failure callbacks originate on OkHttp threads, while requests
+     * are registered by arbitrary coroutine dispatchers. A regular monitor keeps pending-response
+     * mutation synchronous: most importantly, close() can fail every waiter before cancelling the
+     * connection scope instead of launching cleanup into the scope it is about to cancel.
+     */
+    private val pendingLock = Any()
     private var webSocket: WebSocket? = null
     private var keepaliveJob: Job? = null
     private var nextId = 0
@@ -122,15 +133,14 @@ class JsonRpcConnection(
     suspend fun send(
         method: String,
         params: JsonValue?,
-        timeout: Duration = 20.seconds,
+        timeout: Duration? = 20.seconds,
     ): JsonValue {
         val deferred = CompletableDeferred<JsonValue>()
-        val id: Int
-        mutex.withLock {
+        val id = synchronized(pendingLock) {
             if (closed) throw ConnError.Closed
             nextId += 1
-            id = nextId
-            pending[id] = deferred
+            pending[nextId] = deferred
+            nextId
         }
         val text = jsonObject(
             "jsonrpc" to "2.0".jv(),
@@ -151,10 +161,14 @@ class JsonRpcConnection(
             throw ConnError.Closed
         }
         return try {
-            withTimeout(timeout) { deferred.await() }
+            // Some daemon mutations (notably message.send) intentionally keep their JSON-RPC
+            // request open for the whole agent turn. A null timeout lets transport close/zombie
+            // detection remain the failure signal instead of inventing a delivery failure while
+            // the model is still working or waiting for a tool approval.
+            if (timeout == null) deferred.await() else withTimeout(timeout) { deferred.await() }
         } catch (_: TimeoutCancellationException) {
             android.util.Log.w("JsonRpc", "TIMEOUT id=$id $method after $timeout")
-            mutex.withLock { pending.remove(id) }
+            synchronized(pendingLock) { pending.remove(id) }
             throw ConnError.Timeout(method)
         }
     }
@@ -172,28 +186,22 @@ class JsonRpcConnection(
     // MARK: - internals
 
     private fun resume(id: Int, value: JsonValue) {
-        scope.launch {
-            val cont = mutex.withLock { pending.remove(id) }
-            cont?.complete(value)
-        }
+        val cont = synchronized(pendingLock) { pending.remove(id) }
+        cont?.complete(value)
     }
 
     private fun resume(id: Int, error: Throwable) {
-        scope.launch {
-            val cont = mutex.withLock { pending.remove(id) }
-            cont?.completeExceptionally(error)
-        }
+        val cont = synchronized(pendingLock) { pending.remove(id) }
+        cont?.completeExceptionally(error)
     }
 
     private fun failAll(error: Throwable) {
-        scope.launch {
-            val conts = mutex.withLock {
-                val all = pending.values.toList()
-                pending.clear()
-                all
-            }
-            conts.forEach { it.completeExceptionally(error) }
+        val conts = synchronized(pendingLock) {
+            val all = pending.values.toList()
+            pending.clear()
+            all
         }
+        conts.forEach { it.completeExceptionally(error) }
     }
 
     private val listener = object : WebSocketListener() {
@@ -231,7 +239,9 @@ class JsonRpcConnection(
             }
             is JsonRpcInbound.Failure -> {
                 android.util.Log.d("JsonRpc", "in error id=${inbound.id} code=${inbound.code} ${inbound.message.take(60)}")
-                inbound.id?.let { resume(it, ConnError.Rpc(inbound.code, inbound.message)) }
+                inbound.id?.let {
+                    resume(it, ConnError.Rpc(inbound.code, inbound.message, inbound.dataCode))
+                }
             }
             is JsonRpcInbound.Notification -> {
                 val ok = _notifications.tryEmit(Notification(inbound.method, inbound.params))
@@ -266,6 +276,8 @@ class JsonRpcConnection(
         private val portalCapabilities: JsonValue = jsonObject(
             "portal.dashboard.read" to true.jv(),
             "portal.mobile.status.read" to true.jv(),
+            // Explicit opt-in: Core may push status for sessions this phone has not attached yet.
+            "portal.mobile.status.push.v1" to true.jv(),
             "portal.auth.read" to true.jv(),
             "portal.auth.login" to true.jv(),
             "portal.auth.logout" to true.jv(),
@@ -275,6 +287,9 @@ class JsonRpcConnection(
             "portal.agent.attach" to true.jv(),
             "portal.transcript.read" to true.jv(),
             "portal.message.send" to true.jv(),
+            // Core delivers privileged Ledger actions to capable initialized phones even when the
+            // originating session is not currently open or attached in the Android UI.
+            "portal.ledger.solana.sign.v1" to true.jv(),
         )
 
         /** OkHttp wants ws(s):// — map the daemon's ws/wss URLs through unchanged, https→wss if needed. */
