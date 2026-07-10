@@ -1,425 +1,758 @@
 package ai.tetsuo.agenc.ui.screens
 
+import ai.tetsuo.agenc.data.AppGraph
+import ai.tetsuo.agenc.data.Prefs
+import ai.tetsuo.agenc.R
+import ai.tetsuo.agenc.model.Identity
+import ai.tetsuo.agenc.model.Tier
+import ai.tetsuo.agenc.notif.NotificationCoordinator
+import ai.tetsuo.agenc.ui.AgenCTheme
+import ai.tetsuo.agenc.ui.HapticCue
+import ai.tetsuo.agenc.ui.rememberAgenCHaptics
+import android.app.TimePickerDialog
+import android.content.Intent
+import android.provider.Settings
+import android.text.format.DateFormat
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material3.Icon
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ai.tetsuo.agenc.data.AppGraph
-import ai.tetsuo.agenc.data.Prefs
-import ai.tetsuo.agenc.model.Identity
-import ai.tetsuo.agenc.model.Tier
-import ai.tetsuo.agenc.ui.AgenCTheme
-import ai.tetsuo.agenc.ui.Brand
+import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
-/**
- * Account screen — the Android port of the identity + logout slice of iOS `AccountView`.
- *
- * Follows the SYSTEM appearance (light or dark): a big bold "Account" title, an identity card, and a
- * Log out action. The floating bottom tab bar lives in the Main shell, so this screen leaves room at
- * the bottom and renders no bar of its own.
- *
- * Stateless: identity is passed in (null while it loads), logout is a callback.
- *
- * @param identity the signed-in identity, or null while loading.
- * @param onLogout fires when the user taps Log out.
- */
+/** Account, preferences and hardware wallet controls in the shared black AgenC shell. */
 @Composable
 fun AccountScreen(
     identity: Identity?,
     onLogout: () -> Unit,
     prefs: Prefs? = runCatching { AppGraph.prefs }.getOrNull(),
+    notifications: NotificationCoordinator? = runCatching { AppGraph.notifications }.getOrNull(),
     onOpenLedger: (() -> Unit)? = null,
 ) {
-    val colors = MaterialTheme.colorScheme
-    Column(
+    var showLogoutConfirm by rememberSaveable { mutableStateOf(false) }
+    var notificationStatusRevision by remember { mutableIntStateOf(0) }
+    var notificationTestResult by rememberSaveable { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                notificationStatusRevision += 1
+                notificationTestResult = null
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val notificationStatus = remember(notifications, notificationStatusRevision) {
+        notifications?.deliveryStatus()
+    }
+    val openNotificationSettings = {
+        context.startActivity(
+            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            },
+        )
+    }
+    val sendTestNotification = {
+        notificationTestResult = if (notifications?.postTestNotification() == true) {
+            "SENT"
+        } else {
+            "BLOCKED"
+        }
+        notificationStatusRevision += 1
+    }
+    val walletSectionNumber = if (prefs == null) 2 else 4
+    val securitySectionNumber = walletSectionNumber + if (onOpenLedger == null) 0 else 1
+
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.background)
-            .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .background(MainPalette.canvas)
+            .statusBarsPadding(),
+        contentPadding = PaddingValues(
+            start = 20.dp,
+            end = 20.dp,
+            top = 18.dp,
+            bottom = 24.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        Text(
-            text = "Account",
-            color = colors.onBackground,
-            fontSize = 34.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 16.dp, bottom = 16.dp),
-        )
+        item(key = "account-header") {
+            MainScreenHeader(section = "AgenC / Identity", title = "Account")
+        }
 
-        ProfileCard(identity)
+        item(key = "identity-heading") { SectionHeading(index = "01", title = "Identity") }
+        item(key = "identity") { IdentityPanel(identity) }
 
         if (prefs != null) {
-            Spacer(Modifier.height(20.dp))
-            NotificationsSection(prefs)
+            item(key = "notification-settings") {
+                NotificationsSection(
+                    prefs = prefs,
+                    deliveryStatus = notificationStatus,
+                    testResult = notificationTestResult,
+                    onOpenSystemSettings = openNotificationSettings,
+                    onSendTestNotification = sendTestNotification,
+                )
+            }
         }
 
         if (onOpenLedger != null) {
-            Spacer(Modifier.height(20.dp))
-            WalletSection(onOpenLedger)
+            item(key = "wallet-heading") {
+                SectionHeading(index = walletSectionNumber.toString().padStart(2, '0'), title = "Hardware wallet")
+            }
+            item(key = "wallet") { WalletAction(onOpenLedger) }
         }
 
-        Spacer(Modifier.height(20.dp))
-        LogoutButton(onLogout)
-        // Leave room for the floating tab bar.
-        Spacer(Modifier.height(110.dp))
+        item(key = "security-heading") {
+            SectionHeading(index = securitySectionNumber.toString().padStart(2, '0'), title = "Security")
+        }
+        item(key = "logout") { LogoutAction { showLogoutConfirm = true } }
+    }
+
+    if (showLogoutConfirm) {
+        LogoutDialog(
+            onDismiss = { showLogoutConfirm = false },
+            onConfirm = {
+                showLogoutConfirm = false
+                onLogout()
+            },
+        )
     }
 }
 
-/**
- * The Notifications settings — the Android port of the iOS Screens.swift Notifications section:
- * the three toggles (Approval needed / Turn complete / Errors), a quiet-hours toggle with From/To
- * hour pickers, and a turn-done threshold stepper. Writes straight through to [Prefs] (not reactive,
- * so local Compose state mirrors it).
- */
-/** Wallet actions — sign transfers with the Ledger Flex over BLE (keys stay on the device). */
 @Composable
-private fun WalletSection(onOpenLedger: () -> Unit) {
-    SettingsCard {
-        SectionHeader("Wallet")
-        Row(
+private fun NotificationsSection(
+    prefs: Prefs,
+    deliveryStatus: NotificationCoordinator.DeliveryStatus?,
+    testResult: String?,
+    onOpenSystemSettings: () -> Unit,
+    onSendTestNotification: () -> Unit,
+) {
+    var notifyAttention by rememberSaveable { mutableStateOf(prefs.notifyAttention) }
+    var notifyTurnDone by rememberSaveable { mutableStateOf(prefs.notifyTurnDone) }
+    var notifyErrors by rememberSaveable { mutableStateOf(prefs.notifyErrors) }
+    var quietEnabled by rememberSaveable { mutableStateOf(prefs.quietHoursEnabled) }
+    var quietStart by rememberSaveable { mutableIntStateOf(prefs.quietStartHour) }
+    var quietEnd by rememberSaveable { mutableIntStateOf(prefs.quietEndHour) }
+    var threshold by rememberSaveable { mutableIntStateOf(prefs.turnDoneThresholdSeconds) }
+    val deliveryReady = deliveryStatus?.isReadyFor(
+        attention = notifyAttention || notifyErrors,
+        turnDone = notifyTurnDone,
+    )
+
+    Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        SectionHeading(index = "02", title = "Notifications")
+        SettingsGroup {
+            SettingsActionRow(
+                label = "Android delivery",
+                value = when {
+                    deliveryStatus == null -> "CHECK"
+                    deliveryReady == true -> "ON"
+                    else -> "FIX"
+                },
+                onClick = onOpenSystemSettings,
+            )
+            SettingsDivider()
+            ToggleRow("Approval & input", notifyAttention) {
+                notifyAttention = it
+                prefs.notifyAttention = it
+                if (it && deliveryStatus?.let {
+                        !it.runtimePermissionGranted || !it.appEnabled || !it.attentionChannelEnabled
+                    } == true
+                ) {
+                    onOpenSystemSettings()
+                }
+            }
+            SettingsDivider()
+            ToggleRow("Turn complete", notifyTurnDone) {
+                notifyTurnDone = it
+                prefs.notifyTurnDone = it
+                if (it && deliveryStatus?.let {
+                        !it.runtimePermissionGranted || !it.appEnabled || !it.turnDoneChannelEnabled
+                    } == true
+                ) {
+                    onOpenSystemSettings()
+                }
+            }
+            SettingsDivider()
+            ToggleRow("Errors", notifyErrors) {
+                notifyErrors = it
+                prefs.notifyErrors = it
+                if (it && deliveryStatus?.let {
+                        !it.runtimePermissionGranted || !it.appEnabled || !it.attentionChannelEnabled
+                    } == true
+                ) {
+                    onOpenSystemSettings()
+                }
+            }
+            SettingsDivider()
+            SettingsActionRow(
+                label = "Test notification",
+                value = testResult ?: "SEND",
+                onClick = onSendTestNotification,
+            )
+            SettingsNote(
+                if (deliveryReady == false) {
+                    "Android is blocking the app or a notification channel. Open Android delivery to fix it."
+                } else {
+                    "Alerts are local while AgenC stays connected in the background. The open chat notifies after you leave the app; muted sessions stay quiet."
+                },
+            )
+        }
+
+        SectionHeading(index = "03", title = "Delivery")
+        SettingsGroup {
+            ToggleRow("Quiet hours", quietEnabled, enabled = notifyTurnDone) {
+                quietEnabled = it
+                prefs.quietHoursEnabled = it
+            }
+            AnimatedVisibility(
+                visible = quietEnabled && notifyTurnDone,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                Column {
+                    SettingsDivider()
+                    TimePickerRow(
+                        label = "From",
+                        hour = quietStart,
+                        onHourChange = { selectedHour ->
+                            quietStart = selectedHour
+                            prefs.quietStartHour = selectedHour
+                        },
+                    )
+                    SettingsDivider()
+                    TimePickerRow(
+                        label = "To",
+                        hour = quietEnd,
+                        onHourChange = { selectedHour ->
+                            quietEnd = selectedHour
+                            prefs.quietEndHour = selectedHour
+                        },
+                    )
+                }
+            }
+            AnimatedVisibility(
+                visible = notifyTurnDone,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                Column {
+                    SettingsDivider()
+                    ValueAdjuster(
+                        label = "Minimum turn time",
+                        value = "${threshold}s",
+                        onMinus = {
+                            threshold = (threshold - 5).coerceAtLeast(0)
+                            prefs.turnDoneThresholdSeconds = threshold
+                        },
+                        onPlus = {
+                            threshold = (threshold + 5).coerceAtMost(300)
+                            prefs.turnDoneThresholdSeconds = threshold
+                        },
+                        minusDescription = "Decrease threshold",
+                        plusDescription = "Increase threshold",
+                    )
+                }
+            }
+            val timeZone = TimeZone.getDefault()
+            val zone = timeZone.getDisplayName(
+                timeZone.inDaylightTime(Date()),
+                TimeZone.SHORT,
+            )
+            SettingsNote(
+                when {
+                    !notifyTurnDone ->
+                        "Turn-complete alerts are off. Enable them above to use delivery controls."
+                    quietEnabled && quietStart == quietEnd ->
+                        "Start and end match, so quiet hours are inactive."
+                    quietEnabled ->
+                        "Turn-complete alerts are suppressed during this $zone window. Approval, input, and errors remain immediate."
+                    else ->
+                        "Approval, input, and error alerts remain immediate. Times use $zone."
+                },
+            )
+        }
+    }
+}
+
+private fun NotificationCoordinator.DeliveryStatus.isReadyFor(
+    attention: Boolean,
+    turnDone: Boolean,
+): Boolean = runtimePermissionGranted && appEnabled &&
+    (!attention || attentionChannelEnabled) &&
+    (!turnDone || turnDoneChannelEnabled)
+
+@Composable
+private fun SettingsActionRow(
+    label: String,
+    value: String,
+    onClick: () -> Unit,
+) {
+    val haptics = rememberAgenCHaptics()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 60.dp)
+            .clickable(role = Role.Button) {
+                haptics.perform(HapticCue.Action)
+                onClick()
+            }
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            color = MainPalette.ink,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = value,
+            color = MainPalette.muted,
+            style = MaterialTheme.typography.labelSmall,
+            letterSpacing = .8.sp,
+        )
+    }
+}
+
+@Composable
+private fun IdentityPanel(identity: Identity?) {
+    val displayName = identity?.displayName?.takeIf { it.isNotBlank() } ?: "Loading account"
+    val handle = identity?.handle?.takeIf { it.isNotBlank() } ?: "Waiting for identity"
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MainPalette.line, RoundedCornerShape(20.dp))
+            .background(MainPalette.surface, RoundedCornerShape(20.dp))
+            .padding(18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onOpenLedger)
-                .padding(vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .size(58.dp)
+                .border(1.dp, MainPalette.ink, RoundedCornerShape(16.dp)),
+            contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = "Fund agent from Ledger",
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 16.sp,
-                modifier = Modifier.weight(1f),
+                text = identity?.let(::initials) ?: "—",
+                color = MainPalette.ink,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.titleMedium,
+                letterSpacing = .8.sp,
             )
-            Text(text = "\u203A", color = Brand.accent, fontSize = 20.sp)
         }
-        SectionFooter("Connect your Ledger Flex over Bluetooth and approve transfers on the device \u2014 keys never leave it.")
+        Spacer(Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(displayName, color = MainPalette.ink, style = MaterialTheme.typography.titleLarge)
+            Text(handle, color = MainPalette.muted, style = MaterialTheme.typography.bodyMedium)
+            when {
+                identity?.runtimeLinked == true -> Text(
+                    "RUNTIME LINKED",
+                    color = MainPalette.ink,
+                    style = MaterialTheme.typography.labelSmall,
+                    letterSpacing = .8.sp,
+                )
+                identity?.runtimeMismatch == true -> Text(
+                    "RUNTIME ACCOUNT MISMATCH",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelSmall,
+                    letterSpacing = .6.sp,
+                )
+            }
+        }
+        if (identity != null && identity.tierVerified) {
+            TierLabel(identity.tier)
+        }
     }
 }
 
 @Composable
-private fun NotificationsSection(prefs: Prefs) {
-    val colors = MaterialTheme.colorScheme
+private fun TierLabel(tier: Tier) {
+    Text(
+        text = tier.label.uppercase(),
+        color = MainPalette.ink,
+        style = MaterialTheme.typography.labelSmall,
+        letterSpacing = .9.sp,
+        modifier = Modifier
+            .border(1.dp, MainPalette.line, RoundedCornerShape(999.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    )
+}
 
-    var notifyAttention by remember { mutableStateOf(prefs.notifyAttention) }
-    var notifyTurnDone by remember { mutableStateOf(prefs.notifyTurnDone) }
-    var notifyErrors by remember { mutableStateOf(prefs.notifyErrors) }
-    var quietEnabled by remember { mutableStateOf(prefs.quietHoursEnabled) }
-    var quietStart by remember { mutableIntStateOf(prefs.quietStartHour) }
-    var quietEnd by remember { mutableIntStateOf(prefs.quietEndHour) }
-    var threshold by remember { mutableIntStateOf(prefs.turnDoneThresholdSeconds) }
-
-    SettingsCard {
-        SectionHeader("Notifications")
-        ToggleRow("Approval needed", notifyAttention) {
-            notifyAttention = it; prefs.notifyAttention = it
-        }
-        ToggleRow("Turn complete", notifyTurnDone) {
-            notifyTurnDone = it; prefs.notifyTurnDone = it
-        }
-        ToggleRow("Errors", notifyErrors) {
-            notifyErrors = it; prefs.notifyErrors = it
-        }
-        SectionFooter(
-            "Get pulled back when your agent needs you, finishes a turn, or hits an error while " +
-                "the app is in the background.",
+@Composable
+private fun WalletAction(onOpenLedger: () -> Unit) {
+    val haptics = rememberAgenCHaptics()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 76.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(MainPalette.ink)
+            .clickable(role = Role.Button) {
+                haptics.perform(HapticCue.Action)
+                onOpenLedger()
+            }
+            .padding(horizontal = 17.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AgenCGlyphIcon(
+            glyph = AgenCGlyph.Wallet,
+            contentDescription = null,
+            tint = MainPalette.canvas,
+            modifier = Modifier.size(28.dp),
         )
-    }
-
-    Spacer(Modifier.height(14.dp))
-
-    SettingsCard {
-        SectionHeader("When to notify")
-        ToggleRow("Quiet hours", quietEnabled) {
-            quietEnabled = it; prefs.quietHoursEnabled = it
+        Spacer(Modifier.width(14.dp))
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("LEDGER FLEX", color = MainPalette.canvas, style = MaterialTheme.typography.labelMedium, letterSpacing = 1.sp)
+            Text("Fund an agent · keys stay on device", color = MainPalette.canvas.copy(alpha = .62f), style = MaterialTheme.typography.bodySmall)
         }
-        if (quietEnabled) {
-            HourPickerRow("From", quietStart) { quietStart = it; prefs.quietStartHour = it }
-            HourPickerRow("To", quietEnd) { quietEnd = it; prefs.quietEndHour = it }
-        }
-        if (notifyTurnDone) {
-            StepperRow(
-                label = "Turn-done after",
-                value = "${threshold}s",
-                onMinus = {
-                    threshold = (threshold - 5).coerceAtLeast(0); prefs.turnDoneThresholdSeconds = threshold
-                },
-                onPlus = {
-                    threshold = (threshold + 5).coerceAtMost(300); prefs.turnDoneThresholdSeconds = threshold
-                },
-            )
-        }
-        SectionFooter(
-            "During quiet hours, only urgent “needs you” and error alerts come through — " +
-                "turn-complete is held back. Turns shorter than the turn-done threshold don't notify.",
-        )
+        Text("OPEN  →", color = MainPalette.canvas, style = MaterialTheme.typography.labelSmall, letterSpacing = .6.sp)
     }
 }
 
 @Composable
-private fun SettingsCard(
-    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
-) {
-    val colors = MaterialTheme.colorScheme
+private fun SettingsGroup(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(colors.surfaceVariant, RoundedCornerShape(18.dp))
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .clip(RoundedCornerShape(18.dp))
+            .background(MainPalette.surface)
+            .border(1.dp, MainPalette.line, RoundedCornerShape(18.dp)),
         content = content,
     )
 }
 
 @Composable
-private fun SectionHeader(text: String) {
-    Text(
-        text = text.uppercase(),
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(bottom = 8.dp),
+private fun SettingsDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(horizontal = 16.dp),
+        thickness = 1.dp,
+        color = MainPalette.lineSoft,
     )
 }
 
 @Composable
-private fun SectionFooter(text: String) {
+private fun SettingsNote(text: String) {
     Text(
         text = text,
-        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-        fontSize = 12.sp,
-        modifier = Modifier.padding(top = 8.dp),
+        color = MainPalette.muted,
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MainPalette.surfaceRaised)
+            .padding(horizontal = 16.dp, vertical = 13.dp),
     )
 }
 
 @Composable
-private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun ToggleRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onChange: (Boolean) -> Unit,
+) {
+    val haptics = rememberAgenCHaptics()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .heightIn(min = 64.dp)
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = { value ->
+                    haptics.perform(if (value) HapticCue.ToggleOn else HapticCue.ToggleOff)
+                    onChange(value)
+                },
+            )
+            .alpha(if (enabled) 1f else .46f)
+            .semantics(mergeDescendants = true) {
+                stateDescription = if (checked) "On" else "Off"
+            }
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = label,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 15.sp,
+            color = MainPalette.ink,
+            style = MaterialTheme.typography.bodyLarge,
             modifier = Modifier.weight(1f),
         )
         Switch(
             checked = checked,
-            onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(checkedTrackColor = Brand.accent),
+            enabled = enabled,
+            onCheckedChange = null,
+            modifier = Modifier.clearAndSetSemantics { },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = MainPalette.canvas,
+                checkedTrackColor = MainPalette.ink,
+                checkedBorderColor = MainPalette.ink,
+                uncheckedThumbColor = MainPalette.muted,
+                uncheckedTrackColor = MainPalette.surfaceRaised,
+                uncheckedBorderColor = MainPalette.line,
+            ),
         )
     }
 }
 
 @Composable
-private fun HourPickerRow(label: String, hour: Int, onChange: (Int) -> Unit) {
+private fun TimePickerRow(
+    label: String,
+    hour: Int,
+    onHourChange: (Int) -> Unit,
+) {
+    val context = LocalContext.current
+    val haptics = rememberAgenCHaptics()
+    val openPicker = {
+        haptics.perform(HapticCue.Adjust)
+        TimePickerDialog(
+            context,
+            R.style.Theme_AgenC_TimePicker,
+            { _, selectedHour, _ -> onHourChange(selectedHour) },
+            hour,
+            0,
+            DateFormat.is24HourFormat(context),
+        ).show()
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .heightIn(min = 68.dp)
+            .clickable(role = Role.Button, onClickLabel = "Change $label time", onClick = openPicker)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Text(label, color = MainPalette.ink, style = MaterialTheme.typography.bodyLarge)
+        Spacer(Modifier.weight(1f))
         Text(
-            text = label,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 15.sp,
-            modifier = Modifier.weight(1f),
+            text = localizedHour(hour, DateFormat.is24HourFormat(context)),
+            color = MainPalette.ink,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.labelLarge,
         )
-        StepButton(Icons.Filled.Remove) { onChange((hour + 23) % 24) }
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(14.dp))
         Text(
-            text = hourLabel(hour),
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.width(72.dp),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            text = "CHANGE",
+            color = MainPalette.muted,
+            style = MaterialTheme.typography.labelSmall,
+            letterSpacing = .7.sp,
         )
-        Spacer(Modifier.width(10.dp))
-        StepButton(Icons.Filled.Add) { onChange((hour + 1) % 24) }
     }
 }
 
 @Composable
-private fun StepperRow(label: String, value: String, onMinus: () -> Unit, onPlus: () -> Unit) {
+private fun ValueAdjuster(
+    label: String,
+    value: String,
+    onMinus: () -> Unit,
+    onPlus: () -> Unit,
+    minusDescription: String,
+    plusDescription: String,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .heightIn(min = 68.dp)
+            .padding(start = 16.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = label,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 15.sp,
-            modifier = Modifier.weight(1f),
-        )
-        StepButton(Icons.Filled.Remove, onMinus)
-        Spacer(Modifier.width(10.dp))
+        Text(label, color = MainPalette.ink, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        StepButton(symbol = "−", contentDescription = minusDescription, onClick = onMinus)
         Text(
             text = value,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.width(52.dp),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            color = MainPalette.ink,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.labelLarge,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.width(64.dp),
         )
-        Spacer(Modifier.width(10.dp))
-        StepButton(Icons.Filled.Add, onPlus)
+        StepButton(symbol = "+", contentDescription = plusDescription, onClick = onPlus)
     }
 }
 
 @Composable
-private fun StepButton(icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+private fun StepButton(symbol: String, contentDescription: String, onClick: () -> Unit) {
+    val haptics = rememberAgenCHaptics()
     Box(
         modifier = Modifier
-            .size(32.dp)
-            .background(Brand.accent.copy(alpha = 0.12f), CircleShape)
-            .clickable(onClick = onClick),
+            .size(48.dp)
+            .clip(RoundedCornerShape(13.dp))
+            .border(1.dp, MainPalette.line, RoundedCornerShape(13.dp))
+            .clickable(role = Role.Button, onClickLabel = contentDescription) {
+                haptics.perform(HapticCue.Adjust)
+                onClick()
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = Brand.accent,
-            modifier = Modifier.size(18.dp),
-        )
-    }
-}
-
-/** 12-hour clock label like "10 PM" / "7 AM" — matches the iOS `hourLabel`. */
-private fun hourLabel(h: Int): String {
-    val period = if (h < 12) "AM" else "PM"
-    val twelve = when {
-        h == 0 -> 12
-        h > 12 -> h - 12
-        else -> h
-    }
-    return "$twelve $period"
-}
-
-@Composable
-private fun ProfileCard(identity: Identity?) {
-    val colors = MaterialTheme.colorScheme
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(colors.surfaceVariant, RoundedCornerShape(18.dp))
-            .padding(20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(72.dp)
-                .background(Brand.accent.copy(alpha = 0.18f), CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Person,
-                contentDescription = null,
-                tint = Brand.accent,
-                modifier = Modifier.size(38.dp),
-            )
-        }
-        Spacer(Modifier.height(14.dp))
-        Text(
-            text = identity?.displayName ?: "Loading…",
-            color = colors.onSurface,
-            fontSize = 20.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        if (identity != null) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = identity.handle,
-                color = colors.onSurfaceVariant,
-                fontSize = 14.sp,
-            )
-            Spacer(Modifier.height(12.dp))
-            TierBadge(identity.tier)
-        }
+        Text(symbol, color = MainPalette.ink, style = MaterialTheme.typography.titleLarge)
     }
 }
 
 @Composable
-private fun TierBadge(tier: Tier) {
-    Box(
-        modifier = Modifier
-            .background(Brand.accent.copy(alpha = 0.18f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 5.dp),
-    ) {
-        Text(
-            text = tier.label,
-            color = Brand.accent,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-@Composable
-private fun LogoutButton(onLogout: () -> Unit) {
+private fun LogoutAction(onClick: () -> Unit) {
+    val haptics = rememberAgenCHaptics()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brand.danger.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-            .clickable(onClick = onLogout)
-            .padding(vertical = 16.dp),
-        horizontalArrangement = Arrangement.Center,
+            .heightIn(min = 64.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .border(1.dp, MainPalette.line, RoundedCornerShape(18.dp))
+            .clickable(role = Role.Button) {
+                haptics.perform(HapticCue.Action)
+                onClick()
+            }
+            .padding(horizontal = 17.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.Logout,
+        AgenCGlyphIcon(
+            glyph = AgenCGlyph.Exit,
             contentDescription = null,
-            tint = Brand.danger,
-            modifier = Modifier.size(20.dp),
+            tint = MainPalette.muted,
+            modifier = Modifier.size(22.dp),
         )
-        Spacer(Modifier.width(8.dp))
-        Text("Log out", color = Brand.danger, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        Spacer(Modifier.width(12.dp))
+        Text("LOG OUT", color = MainPalette.muted, style = MaterialTheme.typography.labelMedium, letterSpacing = 1.sp)
+        Spacer(Modifier.weight(1f))
+        Text("CLEAR LOCAL DATA", color = MainPalette.quiet, style = MaterialTheme.typography.labelSmall, letterSpacing = .6.sp)
     }
 }
 
-@Preview(name = "Account — signed in", showBackground = true, backgroundColor = 0xFFFFFFFF)
+@Composable
+private fun LogoutDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(MainPalette.surface)
+                .border(1.dp, MainPalette.line, RoundedCornerShape(22.dp))
+                .padding(22.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text("Log out?", color = MainPalette.ink, style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "This disconnects the phone, clears local chats and credentials, and asks Core to revoke this pairing. You will need to sign in and pair again.",
+                color = MainPalette.muted,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                DialogAction(
+                    label = "CANCEL",
+                    foreground = MainPalette.ink,
+                    background = MainPalette.surfaceRaised,
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f),
+                )
+                DialogAction(
+                    label = "LOG OUT",
+                    foreground = MainPalette.canvas,
+                    background = MainPalette.ink,
+                    cue = HapticCue.Reject,
+                    onClick = onConfirm,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DialogAction(
+    label: String,
+    foreground: androidx.compose.ui.graphics.Color,
+    background: androidx.compose.ui.graphics.Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    cue: HapticCue = HapticCue.Action,
+) {
+    val haptics = rememberAgenCHaptics()
+    Box(
+        modifier = modifier
+            .heightIn(min = 50.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(background)
+            .clickable(role = Role.Button) {
+                haptics.perform(cue)
+                onClick()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = foreground, style = MaterialTheme.typography.labelMedium, letterSpacing = .8.sp)
+    }
+}
+
+private fun localizedHour(hour: Int, use24Hour: Boolean): String {
+    val calendar = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, hour.coerceIn(0, 23))
+        set(Calendar.MINUTE, 0)
+    }
+    val pattern = if (use24Hour) "HH:mm" else "h:mm a"
+    return SimpleDateFormat(pattern, Locale.getDefault()).format(calendar.time)
+}
+
+private fun initials(identity: Identity): String {
+    val parts = identity.displayName.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+    return parts.take(2).mapNotNull { it.firstOrNull()?.uppercaseChar() }.joinToString("").ifBlank { "A" }
+}
+
+@Preview(name = "Account / dark", showBackground = true, backgroundColor = 0xFF000000)
 @Composable
 private fun AccountScreenPreview() {
     AgenCTheme {
@@ -430,10 +763,8 @@ private fun AccountScreenPreview() {
     }
 }
 
-@Preview(name = "Account — loading", showBackground = true, backgroundColor = 0xFFFFFFFF)
+@Preview(name = "Account / loading", showBackground = true, backgroundColor = 0xFF000000)
 @Composable
 private fun AccountScreenLoadingPreview() {
-    AgenCTheme {
-        AccountScreen(identity = null, onLogout = {})
-    }
+    AgenCTheme { AccountScreen(identity = null, onLogout = {}) }
 }

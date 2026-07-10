@@ -1,13 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <!-- White diamond mark centered in the adaptive-icon safe zone, echoing the iOS icon. -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,33 L75,54 L54,75 L33,54 Z" />
-    <path
-        android:fillColor="#FF8B5CF6"
-        android:pathData="M54,44 L64,54 L54,64 L44,54 Z" />
+    android:viewportWidth="451.82"
+    android:viewportHeight="451.85">
+    <!-- Exact agenc.tech/agenc-logo.svg geometry, converted with Android's Svg2Vector. -->
+    <group
+        android:pivotX="225.91"
+        android:pivotY="225.925"
+        android:scaleX="0.5"
+        android:scaleY="0.5">
+        <path
+            android:pathData="M451.82,350.07l-25.49,25.42l-25.43,-25.42l25.43,-25.49l25.49,25.49z"
+            android:fillColor="#FFFFFFFF" />
+        <path
+            android:pathData="M451.82,400.98l-50.92,50.86l-25.49,-25.43l50.92,-50.92l25.49,25.49z"
+            android:fillColor="#FFFFFFFF" />
+        <path
+            android:pathData="M324.56,426.43l25.43,-25.43l25.43,25.43l-25.43,25.43z"
+            android:fillColor="#FFFFFFFF" />
+        <path
+            android:pathData="M25.43,76.42L0,101.85l25.43,25.49 25.49,-25.49 -25.49,-25.43ZM50.91,0.02L0,50.93l25.43,25.49 50.92,-50.92L50.91,0.02ZM101.77,0.02l-25.43,25.49 25.43,25.43 25.49,-25.43L101.77,0.02Z"
+            android:fillColor="#FFFFFFFF" />
+        <path
+            android:pathData="M133.6,165.48l0.08,0.04 31.76,-31.85 -31.85,31.8ZM349.99,0l-25.43,25.51 25.43,25.43 25.43,-25.43L349.99,0ZM400.88,0l-25.47,25.51 50.9,50.9 25.51,-25.47L400.88,0ZM426.31,76.41l-25.43,25.43 25.43,25.51 25.51,-25.51 -25.51,-25.43Z"
+            android:fillColor="#FFFFFFFF" />
+        <path
+            android:pathData="M50.91,350.07l-25.48,25.42l-25.43,-25.42l25.43,-25.49l25.48,25.49z"
+            android:fillColor="#FFFFFFFF" />
+        <path
+            android:pathData="M76.34,426.41l-25.43,25.43l-50.91,-50.86l25.43,-25.49l50.91,50.92z"
+            android:fillColor="#FFFFFFFF" />
+        <path
+            android:pathData="M127.26,426.41l-25.43,25.43l-25.49,-25.43l25.43,-25.43l25.49,25.43z"
+            android:fillColor="#FFFFFFFF" />
+        <path
+            android:pathData="M451.82,152.77l-25.51,-25.43 -73.15,73.16 -101.83,-101.83 73.24,-73.16L299.09,0l-73.2,73.24L152.7,0l-25.43,25.51 73.16,73.16 -34.97,35.01 -31.76,31.85 -35.06,35.01L25.43,127.34 0,152.77l73.2,73.2L0,299.16l25.43,25.43 73.2,-73.2 66.82,66.82 34.97,35.01 -73.16,73.2 25.43,25.43 73.2,-73.2 73.2,73.2 25.47,-25.43 -73.24,-73.2 66.82,-66.78 35.02,-35.06 73.15,73.2 25.51,-25.43 -73.15,-73.2 73.15,-73.2ZM225.89,321.38l-95.46,-95.46 95.46,-95.41 95.5,95.41 -95.5,95.46Z"
+            android:fillColor="#FFFFFFFF" />
+    </group>
 </vector>

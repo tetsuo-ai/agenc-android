@@ -112,7 +112,10 @@ class BackendApiClient(
     }
 
     suspend fun logout(token: String) {
-        runCatching { post(AppConfig.Path.LOGOUT, emptyMap(), token) }
+        val (_, status) = post(AppConfig.Path.LOGOUT, emptyMap(), token)
+        if (status !in 200..299) {
+            throw AuthException("Remote logout failed (error $status).")
+        }
     }
 
     /**
@@ -150,9 +153,19 @@ class BackendApiClient(
         return json.decodeFromString(PairingDTO.serializer(), data)
     }
 
-    /** Unpair this phone from a computer. Best-effort. */
+    /** Unpair this phone from a computer. The caller decides whether failure is best-effort. */
     suspend fun pairRevoke(pairingId: String, token: String) {
-        runCatching { post(AppConfig.Path.PAIR_REVOKE, mapOf("pairingId" to pairingId), token) }
+        val (_, status) = post(
+            AppConfig.Path.PAIR_REVOKE,
+            mapOf("pairingId" to pairingId),
+            token,
+        )
+        if (status !in 200..299) {
+            throw PairingException(
+                if (status == 404) "This pairing is already unavailable."
+                else "Couldn't unlink this computer (error $status).",
+            )
+        }
     }
 
     // MARK: - helpers

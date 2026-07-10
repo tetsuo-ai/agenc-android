@@ -188,6 +188,35 @@ class LedgerBleTransport(private val context: Context) {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
             ?.adapter?.takeIf { it.isEnabled }?.bluetoothLeScanner
 
+    /**
+     * Reconstruct a previously selected Ledger from its public Bluetooth address, without running
+     * another BLE scan. Android keeps the system bond; [BluetoothDevice] is only a lightweight
+     * remote-device handle and [connect] still performs the full authenticated GATT handshake.
+     *
+     * Returns null when Bluetooth is unavailable, the address is malformed, or CONNECT permission
+     * was revoked. The caller can then fall back to the normal scan/picker flow.
+     */
+    fun rememberedDevice(address: String, rememberedName: String? = null): DiscoveredDevice? {
+        val cleanAddress = address.trim()
+        if (cleanAddress.isEmpty()) return null
+        return try {
+            val adapter =
+                (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
+                    ?.adapter?.takeIf { it.isEnabled } ?: return null
+            val device = adapter.bondedDevices.firstOrNull {
+                it.address.equals(cleanAddress, ignoreCase = true)
+            } ?: adapter.getRemoteDevice(cleanAddress)
+            val name = rememberedName?.takeIf { it.isNotBlank() }
+                ?: runCatching { device.name }.getOrNull()?.takeIf { it.isNotBlank() }
+                ?: "Ledger"
+            DiscoveredDevice(name = name, address = device.address, device = device)
+        } catch (_: IllegalArgumentException) {
+            null
+        } catch (_: SecurityException) {
+            null
+        }
+    }
+
     // ---- GATT callback ------------------------------------------------------------------------
 
     private val gattCallback = object : BluetoothGattCallback() {

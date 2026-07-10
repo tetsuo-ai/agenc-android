@@ -31,8 +31,8 @@ object AppConfig {
         const val PAIR_REVOKE = "/v1/pair/revoke"
     }
 
-    /** Brand purple, matching the iOS accent. */
-    val Accent = Color(0xFF8B5CF6)
+    /** Legacy UI constant kept for compatibility; the active design system is monochrome. */
+    val Accent = Color(0xFFF4F4F1)
     val Canvas = Color(0xFF000000)
     val Danger = Color(0xFFFF453A)
 }

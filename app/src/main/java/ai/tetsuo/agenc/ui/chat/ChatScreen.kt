@@ -1,6 +1,15 @@
 package ai.tetsuo.agenc.ui.chat
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -23,18 +33,34 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -43,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.tetsuo.agenc.model.PendingElicitation
 import ai.tetsuo.agenc.model.PendingPermission
+import ai.tetsuo.agenc.model.PermissionDecisionState
 import ai.tetsuo.agenc.model.QuestionOption
 import ai.tetsuo.agenc.model.SessionLifecycle
 import ai.tetsuo.agenc.model.TokenUsage
@@ -52,6 +79,11 @@ import ai.tetsuo.agenc.model.TranscriptItem
 import ai.tetsuo.agenc.ui.AgenCTheme
 import ai.tetsuo.agenc.ui.Brand
 import ai.tetsuo.agenc.ui.ChatPalette
+import ai.tetsuo.agenc.ui.HapticCue
+import ai.tetsuo.agenc.ui.rememberAgenCHaptics
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * The chat screen — a fully STATELESS port of the iOS `ChatThreadView`. All state and callbacks
@@ -61,8 +93,7 @@ import ai.tetsuo.agenc.ui.ChatPalette
  *  - pure-black canvas, black header with back / compose / ⋯
  *  - user messages = light rounded bubbles on the right; assistant = flat text on the left
  *  - tool cards hidden, consecutive thinking blocks collapsed (see [forDisplay])
- *  - while a turn runs only the rainbow "thinking…" row shows (no extra "working…"); a brief
- *    [TypingIndicator] fills the gap before the agent produces visible output
+ *  - while a turn runs only animated monochrome dots show; completed reasoning leaves no label
  *  - read-only sessions show a banner instead of the composer
  *  - a pending permission / elicitation surfaces as a blocking bottom sheet
  *
@@ -76,61 +107,384 @@ fun ChatScreen(
     lifecycle: SessionLifecycle,
     usage: TokenUsage,
     pendingPermission: PendingPermission?,
+    permissionDecisionState: PermissionDecisionState = PermissionDecisionState.Idle,
     pendingElicitation: PendingElicitation?,
     isReadOnly: Boolean,
+    connectionState: ChatConnectionState = ChatConnectionState.Connected,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
     onApprove: (id: String, scope: String) -> Unit,
     onDeny: (id: String) -> Unit,
     onRespond: (id: String, answer: String) -> Unit,
     onBack: () -> Unit,
+    sessionId: String = "",
+    historyReady: Boolean = true,
+    historyLoadFailed: Boolean = false,
     reduceMotion: Boolean = false,
-    /** Thinking msgId → measured reasoning seconds (SessionStore.thinkingDurations). */
+    /** Retained for store compatibility; durations are intentionally not rendered. */
     thinkingDurations: Map<String, Int> = emptyMap(),
     // Voice recording (demo).
     isRecording: Boolean = false,
     recordSeconds: Int = 0,
+    voiceEnabled: Boolean = false,
     onMic: () -> Unit = {},
     onStopRecording: () -> Unit = {},
+    /** Rewind target is zero-based among selectable user prompts. */
+    onEditSend: (messageOrdinal: Int, msgId: String, revisedText: String) -> Unit = { _, _, _ -> },
 ) {
-    val display = forDisplay(items)
+    val revealSessionKey = sessionId.ifBlank { "$title|$cwd" }
+    val unfilteredDisplay = forDisplay(items)
+    // Reasoning is live chrome only. Keep just the current trailing reasoning item, and remove it
+    // as soon as assistant text starts so completed turns never retain a stale thinking label/gap.
+    val liveThinkingIndex = unfilteredDisplay.indexOfLast { it is TranscriptItem.Thinking }
+        .takeIf { index ->
+            lifecycle.isInFlight && index >= 0 &&
+                unfilteredDisplay.drop(index + 1).none {
+                    it is TranscriptItem.User ||
+                        it is TranscriptItem.Voice ||
+                        it is TranscriptItem.Assistant ||
+                        it is TranscriptItem.LedgerTransfer
+                }
+        }
+    val display = unfilteredDisplay.filterIndexed { index, item ->
+        item !is TranscriptItem.Thinking || index == liveThinkingIndex
+    }
+    val userMessageOrdinals = remember(items) {
+        buildMap<String, Int> {
+            var ordinal = 0
+            // Core ordinals restart after the latest compaction boundary. Older prompts remain
+            // visible locally but are intentionally not editable because they are no longer in
+            // Core's selectable active history.
+            val activeStart = items.indexOfLast { it is TranscriptItem.Divider } + 1
+            items.drop(activeStart).forEach { item ->
+                if (item is TranscriptItem.User) {
+                    put(item.msgId, ordinal)
+                    ordinal += 1
+                }
+            }
+        }
+    }
+    var editDraft by remember(revealSessionKey) { mutableStateOf<MessageEditDraft?>(null) }
+    val userEditEnabled = !lifecycle.isInFlight && !isReadOnly && !isRecording
+    LaunchedEffect(lifecycle, isReadOnly, isRecording) {
+        if (!userEditEnabled) editDraft = null
+    }
     val lastId = items.lastOrNull()?.id
-    val agentRespondingInTurn = display.any { it is TranscriptItem.Thinking || it is TranscriptItem.Assistant }
+    val lastUserIndex = display.indexOfLast {
+        it is TranscriptItem.User || it is TranscriptItem.Voice
+    }
+    val latestInputId = display.getOrNull(lastUserIndex)?.id
+    val earlierDisplay = if (lastUserIndex >= 0) display.take(lastUserIndex) else display
+    val latestTurn = if (lastUserIndex >= 0) display.drop(lastUserIndex) else emptyList()
+    val agentRespondingInTurn = display
+        .drop(lastUserIndex + 1)
+        .any { it is TranscriptItem.Thinking || it is TranscriptItem.Assistant }
     val showTyping = lifecycle == SessionLifecycle.Running && !agentRespondingInTurn
 
+    // The restored transcript is positioned while invisible, then revealed as one layer. A small
+    // motion budget is reserved for the visible tail; live token updates keep stable ids and never
+    // replay this entrance.
+    var initialTranscriptRevealed by remember(revealSessionKey) { mutableStateOf(false) }
+    var historyMotionWindowOpen by remember(revealSessionKey) { mutableStateOf(false) }
+    var historyMotionOrder by remember(revealSessionKey) {
+        mutableStateOf<Map<String, Int>>(emptyMap())
+    }
+    val transcriptReveal = remember(revealSessionKey) { Animatable(0f) }
+    var mountedLatestInputId by remember(revealSessionKey) { mutableStateOf<String?>(null) }
+    val enteringInputId = latestInputId.takeIf {
+        initialTranscriptRevealed && it != mountedLatestInputId
+    }
+    SideEffect {
+        if (initialTranscriptRevealed) mountedLatestInputId = latestInputId
+    }
+
     val listState = rememberLazyListState()
-    // Follow the stream: glide to the newest row as items/lifecycle change.
-    LaunchedEffect(items.size, lifecycle) {
-        val target = display.size + if (showTyping) 1 else 0
-        if (target > 0) listState.animateScrollToItem((target - 1).coerceAtLeast(0))
+    val chatScope = rememberCoroutineScope()
+    val isDragged by listState.interactionSource.collectIsDraggedAsState()
+    var transcriptViewportHeightPx by remember { mutableStateOf(0) }
+    var latestTurnHeightPx by remember(latestInputId) { mutableStateOf(0) }
+    val density = LocalDensity.current
+    val transcriptRisePx = with(density) { 4.dp.toPx() }
+    // With 18dp content padding, the 20dp gap before the 1dp bottom anchor, and another 18dp
+    // bottom inset, this runway makes a short latest turn occupy exactly one viewport. The prompt
+    // therefore sits near the top while its answer grows below it; once the answer is taller than
+    // the viewport the runway naturally reaches zero and normal tail-following takes over.
+    val runwayReservePx = with(density) { 57.dp.roundToPx() }
+    val responseRunway = with(density) {
+        (transcriptViewportHeightPx - latestTurnHeightPx - runwayReservePx)
+            .coerceAtLeast(0)
+            .toDp()
+    }
+    // A real item after all transcript content gives us an exact target even when the last agent
+    // response is taller than the viewport. Scrolling to the row itself only reveals its beginning.
+    val bottomAnchorIndex = earlierDisplay.size +
+        (if (latestTurn.isNotEmpty()) 1 else 0) +
+        (if (latestTurn.isEmpty() && showTyping) 1 else 0)
+    val nearBottomThreshold = with(density) { 64.dp.roundToPx() }
+    val isNearBottom by remember(listState, bottomAnchorIndex, nearBottomThreshold) {
+        derivedStateOf {
+            if (bottomAnchorIndex == 0 || listState.layoutInfo.totalItemsCount == 0) {
+                true
+            } else {
+                val lastContentIndex = bottomAnchorIndex - 1
+                listState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.index == lastContentIndex }
+                    ?.let { it.offset + it.size <= listState.layoutInfo.viewportEndOffset + nearBottomThreshold }
+                    ?: false
+            }
+        }
+    }
+    var followTail by remember(listState) { mutableStateOf(true) }
+    var jumpAnimating by remember(listState) { mutableStateOf(false) }
+    var positioningNewTurn by remember(listState) { mutableStateOf(false) }
+    var positionedInputId by remember(listState, revealSessionKey) { mutableStateOf<String?>(null) }
+    val showJumpToLatest by remember(
+        listState,
+        followTail,
+        isNearBottom,
+        initialTranscriptRevealed,
+    ) {
+        derivedStateOf {
+            initialTranscriptRevealed && !followTail && !isNearBottom && listState.canScrollForward
+        }
+    }
+
+    // Never let a long history visibly render at the top and then jump to the bottom. The list is
+    // laid out and positioned behind alpha=0; only then do we reveal it and softly raise its last
+    // few conversational rows. Older rows remain static, keeping the work O(1) for huge sessions.
+    LaunchedEffect(revealSessionKey, historyReady) {
+        if (!historyReady) {
+            transcriptReveal.snapTo(0f)
+            initialTranscriptRevealed = false
+            historyMotionWindowOpen = false
+            historyMotionOrder = emptyMap()
+            return@LaunchedEffect
+        }
+        if (initialTranscriptRevealed) return@LaunchedEffect
+
+        val visibleTail = display.filter {
+            it is TranscriptItem.User ||
+                it is TranscriptItem.Voice ||
+                it is TranscriptItem.Assistant ||
+                it is TranscriptItem.LedgerTransfer
+        }.takeLast(6)
+        historyMotionOrder = visibleTail
+            .mapIndexed { index, item -> item.id to index * 18 }
+            .toMap()
+        mountedLatestInputId = latestInputId
+        positionedInputId = latestInputId
+        followTail = true
+        transcriptReveal.snapTo(0f)
+        listState.scrollToItem(bottomAnchorIndex)
+        withFrameNanos { }
+
+        historyMotionWindowOpen = !reduceMotion && historyMotionOrder.isNotEmpty()
+        initialTranscriptRevealed = true
+        withFrameNanos { }
+        if (reduceMotion) {
+            transcriptReveal.snapTo(1f)
+        } else {
+            transcriptReveal.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = 140,
+                    easing = FastOutSlowInEasing,
+                ),
+            )
+            // Last stagger starts at 90ms and runs for 180ms. Close the window after every row has
+            // settled so rows composed later while scrolling never replay the initial entrance.
+            delay(160)
+            historyMotionWindowOpen = false
+        }
+    }
+
+    // A direct drag means the reader chose an older position. Never fight that gesture with an
+    // automatic jump; re-arm following only after they return close to the end.
+    LaunchedEffect(isDragged, isNearBottom) {
+        if (isDragged && !isNearBottom) followTail = false
+        if (!isDragged && isNearBottom) followTail = true
+    }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress to listState.lastScrolledBackward }
+            .distinctUntilChanged()
+            .collect { (scrolling, movingBack) ->
+                if (scrolling && movingBack) followTail = false
+            }
+    }
+    // Move the whole transcript smoothly when a prompt is sent. The runway makes the end anchor
+    // and the prompt-at-top position equivalent for a short turn, so the generic tail follower can
+    // continue from here without snapping the prompt back against the composer.
+    LaunchedEffect(latestInputId, bottomAnchorIndex, initialTranscriptRevealed) {
+        if (!historyReady || !initialTranscriptRevealed) return@LaunchedEffect
+        val inputId = latestInputId ?: return@LaunchedEffect
+        if (inputId == positionedInputId) return@LaunchedEffect
+        positioningNewTurn = true
+        positionedInputId = inputId
+        followTail = true
+        try {
+            if (reduceMotion) {
+                listState.scrollToItem(bottomAnchorIndex)
+            } else {
+                listState.animateScrollToItem(bottomAnchorIndex)
+            }
+        } finally {
+            positioningNewTurn = false
+        }
+    }
+    // `canScrollForward` is layout-backed, so this reacts when the SAME streaming message grows,
+    // when final Markdown reflows, and when the keyboard changes viewport height. Token count and
+    // item count do not reliably represent any of those cases.
+    LaunchedEffect(listState, bottomAnchorIndex) {
+        snapshotFlow {
+            historyReady && initialTranscriptRevealed &&
+                followTail && !isDragged && !jumpAnimating && !positioningNewTurn &&
+                listState.canScrollForward
+        }
+            .distinctUntilChanged()
+            .collect { shouldCatchUp ->
+                if (shouldCatchUp) listState.scrollToItem(bottomAnchorIndex)
+            }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(ChatPalette.canvas)) {
         Column(modifier = Modifier.fillMaxSize()) {
-            ChatHeader(onBack = onBack)
+            ChatHeader(title = title, onBack = onBack)
             if (cwd.isNotEmpty()) CwdLine(cwd)
             ChatStatusBar(lifecycle, usage)
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .onSizeChanged { transcriptViewportHeightPx = it.height },
             ) {
-                items(display, key = { it.id }) { item ->
-                    MessageRow(
-                        item = item,
-                        streaming = isStreaming(item, lifecycle, lastId),
-                        // Frozen reasoning duration → static "thought for Ns" once measured.
-                        thinkingSeconds = (item as? TranscriptItem.Thinking)
-                            ?.let { thinkingDurations[it.msgId] },
-                        // No duration + turn over → static "thought", never an eternal shimmer.
-                        thinkingLive = lifecycle.isInFlight,
-                        reduceMotion = reduceMotion,
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            alpha = transcriptReveal.value
+                            translationY = (1f - transcriptReveal.value) * transcriptRisePx
+                        },
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                ) {
+                    items(earlierDisplay, key = { it.id }) { item ->
+                        MessageRow(
+                            item = item,
+                            streaming = isStreaming(item, lifecycle, lastId),
+                            thinkingLive = lifecycle.isInFlight,
+                            reduceMotion = reduceMotion,
+                            userMessageOrdinal = (item as? TranscriptItem.User)
+                                ?.let { userMessageOrdinals[it.msgId] },
+                            editUserMessageEnabled = userEditEnabled,
+                            onEditUserMessage = { editDraft = it },
+                            revealMotion = if (historyMotionWindowOpen) {
+                                historyMotionOrder[item.id]?.let { delayMillis ->
+                                    MessageRevealMotion(
+                                        batchKey = "$revealSessionKey:initial",
+                                        delayMillis = delayMillis,
+                                    )
+                                }
+                            } else {
+                                null
+                            },
+                        )
+                    }
+                    if (latestTurn.isNotEmpty()) {
+                        item(key = "latest-turn-$latestInputId") {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .onSizeChanged { latestTurnHeightPx = it.height },
+                                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                                ) {
+                                    latestTurn.forEach { item ->
+                                        androidx.compose.runtime.key(item.id) {
+                                            MessageRow(
+                                                item = item,
+                                                streaming = isStreaming(item, lifecycle, lastId),
+                                                thinkingLive = lifecycle.isInFlight,
+                                                reduceMotion = reduceMotion,
+                                                animateEntry = item.id == enteringInputId,
+                                                userMessageOrdinal = (item as? TranscriptItem.User)
+                                                    ?.let { userMessageOrdinals[it.msgId] },
+                                                editUserMessageEnabled = userEditEnabled,
+                                                onEditUserMessage = { editDraft = it },
+                                                revealMotion = if (historyMotionWindowOpen) {
+                                                    historyMotionOrder[item.id]?.let { delayMillis ->
+                                                        MessageRevealMotion(
+                                                            batchKey = "$revealSessionKey:initial",
+                                                            delayMillis = delayMillis,
+                                                        )
+                                                    }
+                                                } else {
+                                                    null
+                                                },
+                                            )
+                                        }
+                                    }
+                                    if (showTyping) {
+                                        TypingIndicator(reduceMotion = reduceMotion)
+                                    }
+                                }
+                                Spacer(Modifier.height(responseRunway))
+                            }
+                        }
+                    } else if (showTyping) {
+                        item(key = "typing") { TypingIndicator(reduceMotion = reduceMotion) }
+                    }
+                    item(key = "bottom-anchor") { Spacer(Modifier.size(1.dp)) }
+                }
+
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showJumpToLatest,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp),
+                    enter = fadeIn(tween(if (reduceMotion) 0 else 140)),
+                    exit = fadeOut(tween(if (reduceMotion) 0 else 100)),
+                ) {
+                    JumpToLatestButton(
+                        onClick = {
+                            chatScope.launch {
+                                jumpAnimating = true
+                                followTail = true
+                                try {
+                                    if (reduceMotion) {
+                                        listState.scrollToItem(bottomAnchorIndex)
+                                    } else {
+                                        listState.animateScrollToItem(bottomAnchorIndex)
+                                    }
+                                } finally {
+                                    jumpAnimating = false
+                                }
+                            }
+                        },
                     )
                 }
-                if (showTyping) {
-                    item(key = "typing") { TypingIndicator(reduceMotion = reduceMotion) }
+
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = !historyReady,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 18.dp, top = 20.dp),
+                    enter = fadeIn(tween(if (reduceMotion) 0 else 100)),
+                    exit = fadeOut(tween(if (reduceMotion) 0 else 90)),
+                ) {
+                    if (historyLoadFailed) {
+                        Text(
+                            text = "Conversation unavailable",
+                            color = ChatPalette.secondaryText,
+                            fontSize = 13.sp,
+                        )
+                    } else {
+                        TypingIndicator(
+                            reduceMotion = reduceMotion,
+                            contentDescription = "Loading conversation",
+                        )
+                    }
                 }
             }
 
@@ -149,10 +503,26 @@ fun ChatScreen(
                 Box(modifier = Modifier.windowInsetsPadding(composerInsets)) {
                     Composer(
                         isInFlight = lifecycle.isInFlight,
-                        onSend = onSend,
+                        connectionState = connectionState,
+                        editDraft = editDraft,
+                        onSubmitEdit = { target, revisedText ->
+                            editDraft = null
+                            followTail = true
+                            onEditSend(
+                                target.messageOrdinal,
+                                target.messageId,
+                                revisedText,
+                            )
+                        },
+                        onCancelEdit = { editDraft = null },
+                        onSend = { message ->
+                            followTail = true
+                            onSend(message)
+                        },
                         onStop = onStop,
                         isRecording = isRecording,
                         recordSeconds = recordSeconds,
+                        voiceEnabled = voiceEnabled,
                         onMic = onMic,
                         onStopRecording = onStopRecording,
                     )
@@ -164,6 +534,7 @@ fun ChatScreen(
         if (pendingPermission != null) {
             PermissionSheet(
                 permission = pendingPermission,
+                decisionState = permissionDecisionState,
                 onApprove = { scope -> onApprove(pendingPermission.id, scope) },
                 onDeny = { onDeny(pendingPermission.id) },
             )
@@ -172,6 +543,61 @@ fun ChatScreen(
                 elicitation = pendingElicitation,
                 onAnswer = { answer -> onRespond(pendingElicitation.id, answer) },
             )
+        }
+    }
+}
+
+/** Centered transcript affordance shown only after the reader leaves the live tail. */
+@Composable
+private fun JumpToLatestButton(onClick: () -> Unit) {
+    val haptics = rememberAgenCHaptics()
+    val label = "Jump to latest response"
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                contentDescription = label
+            }
+            .clickable(role = Role.Button, onClickLabel = label) {
+                haptics.perform(HapticCue.Action)
+                onClick()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .background(Color(0xFF111111), RoundedCornerShape(12.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(12.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(Modifier.size(18.dp)) {
+                val stroke = 1.8.dp.toPx()
+                val centerX = size.width / 2f
+                val tipY = size.height * 0.78f
+                drawLine(
+                    color = Color.White,
+                    start = Offset(centerX, size.height * 0.18f),
+                    end = Offset(centerX, tipY),
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Square,
+                )
+                drawLine(
+                    color = Color.White,
+                    start = Offset(size.width * 0.26f, size.height * 0.52f),
+                    end = Offset(centerX, tipY),
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Square,
+                )
+                drawLine(
+                    color = Color.White,
+                    start = Offset(size.width * 0.74f, size.height * 0.52f),
+                    end = Offset(centerX, tipY),
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Square,
+                )
+            }
         }
     }
 }
@@ -202,9 +628,10 @@ internal fun forDisplay(items: List<TranscriptItem>): List<TranscriptItem> {
 
 // MARK: - Chrome
 
-/** Black header: a larger custom back chevron, then new-chat + overflow glyphs on the right. */
+/** Black header with the actual session title and no placeholder actions. */
 @Composable
-private fun ChatHeader(onBack: () -> Unit) {
+private fun ChatHeader(title: String, onBack: () -> Unit) {
+    val haptics = rememberAgenCHaptics()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -213,16 +640,26 @@ private fun ChatHeader(onBack: () -> Unit) {
             .padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = onBack) {
+        IconButton(
+            onClick = {
+                haptics.perform(HapticCue.Selection)
+                onBack()
+            },
+        ) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
         }
-        Spacer(Modifier.weight(1f))
-        IconButton(onClick = { /* new chat — wired by the host */ }) {
-            Icon(Icons.Filled.Edit, contentDescription = "New chat", tint = Color.White)
-        }
-        IconButton(onClick = { /* overflow menu — wired by the host */ }) {
-            Icon(Icons.Filled.MoreHoriz, contentDescription = "More", tint = Color.White)
-        }
+        Text(
+            text = title.ifBlank { "Chat" },
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 8.dp),
+        )
+        Spacer(Modifier.size(48.dp))
     }
 }
 
@@ -308,7 +745,7 @@ private fun ConnectionBanner(text: String) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Icon(Icons.Filled.Warning, contentDescription = null, tint = Brand.danger, modifier = Modifier.size(16.dp))
-        Text(text, color = Brand.danger, fontSize = 13.sp)
+        Text(text, color = Color.White, fontSize = 13.sp)
     }
 }
 

@@ -16,6 +16,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -28,7 +29,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.tetsuo.agenc.ui.AgenCTheme
-import ai.tetsuo.agenc.ui.Brand
 import ai.tetsuo.agenc.ui.ChatPalette
 
 /**
@@ -157,7 +157,7 @@ internal fun inlineMarkdown(raw: String): AnnotatedString = buildAnnotatedString
                     withStyle(
                         SpanStyle(
                             fontFamily = FontFamily.Monospace,
-                            color = Brand.accent,
+                            color = Color.White,
                             background = Color.White.copy(alpha = 0.06f),
                         ),
                     ) { append(raw.substring(i + 1, end)) }
@@ -241,12 +241,15 @@ internal fun CodeBlock(language: String?, code: String) {
             .background(Color.White.copy(alpha = 0.045f), RoundedCornerShape(12.dp)),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, end = 4.dp, top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 language ?: "code",
-                color = Brand.accent,
+                color = Color.White,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 fontFamily = FontFamily.Monospace,
@@ -256,6 +259,8 @@ internal fun CodeBlock(language: String?, code: String) {
                 color = ChatPalette.secondaryText,
                 fontSize = 12.sp,
             )
+            Spacer(Modifier.weight(1f))
+            CopyTextAction(text = code, contentDescription = "Copy code")
         }
         Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
             Text(

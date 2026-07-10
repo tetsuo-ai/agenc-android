@@ -22,9 +22,12 @@ class SessionIdMap(
     /** localId -> daemonId */
     fun load(): MutableMap<String, String> {
         val raw = prefs.getString(key) ?: return mutableMapOf()
-        return runCatching {
+        val decoded = runCatching {
             json.decodeFromString(mapSerializer, raw).toMutableMap()
         }.getOrElse { mutableMapOf() }
+        val normalized = normalize(decoded)
+        if (normalized != decoded) save(normalized)
+        return normalized
     }
 
     fun save(map: Map<String, String>) {
@@ -33,12 +36,29 @@ class SessionIdMap(
 
     companion object {
         /**
+         * Migrate maps written by the old discovery path. It could persist both
+         * `local -> daemon` and `daemon -> daemon`, making the inverse depend on map order.
+         * A real local binding always wins over the redundant self binding.
+         */
+        fun normalize(map: Map<String, String>): MutableMap<String, String> {
+            val normalized = map.toMutableMap()
+            val nonSelfTargets = map.asSequence()
+                .filter { (local, daemon) -> local != daemon }
+                .map { (_, daemon) -> daemon }
+                .toSet()
+            for (daemon in nonSelfTargets) {
+                if (normalized[daemon] == daemon) normalized.remove(daemon)
+            }
+            return normalized
+        }
+
+        /**
          * Rebuild the daemonId -> localId inverse from a localId -> daemonId map. A loop (not a
          * uniquing collector) so a stale duplicate daemon id can't trap.
          */
         fun inverse(map: Map<String, String>): MutableMap<String, String> {
             val out = mutableMapOf<String, String>()
-            for ((local, daemon) in map) out[daemon] = local
+            for ((local, daemon) in normalize(map)) out[daemon] = local
             return out
         }
     }
