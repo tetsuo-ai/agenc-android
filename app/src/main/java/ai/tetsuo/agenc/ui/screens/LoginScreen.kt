@@ -1,10 +1,5 @@
 package ai.tetsuo.agenc.ui.screens
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,16 +24,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -47,7 +35,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.tetsuo.agenc.R
 import ai.tetsuo.agenc.ui.AgenCTheme
+import ai.tetsuo.agenc.ui.Brand
+import ai.tetsuo.agenc.ui.HapticCue
 import ai.tetsuo.agenc.ui.Onboarding
+import ai.tetsuo.agenc.ui.rememberAgenCHaptics
 
 /**
  * What the device-flow login surfaces to the UI once the backend hands back a user code.
@@ -61,9 +52,8 @@ data class DeviceCodeUi(
 /**
  * Branded, dark passwordless login — the Android port of iOS `SignInView`.
  *
- * Pixel-faithful to the iOS sign-in: the `agenc` wordmark filled with an animated purple shimmer
- * over the marketplace gradient background, a centered subtitle, and a full-width purple "Sign in"
- * pill (no identifier field — mock identity approves instantly, exactly like iOS). When a login is
+ * Monochrome sign-in: the `agenc` wordmark carries a subtle light sweep over a deep black canvas,
+ * with one high-contrast primary action. When a login is
  * in flight (`isLoading`/`deviceCode != null`) it swaps to a spinner + "signing in" + Cancel.
  *
  * Stateless: every piece of state and every callback is passed in.
@@ -72,6 +62,7 @@ data class DeviceCodeUi(
  * @param isLoading true while a login is in flight (shows the spinner state).
  * @param error optional error string rendered under the action.
  * @param onStart fires when the user taps Sign in; always passes null (no identifier on this screen).
+ * @param onCancel cancels the active device-flow poll.
  */
 @Composable
 fun LoginScreen(
@@ -79,6 +70,7 @@ fun LoginScreen(
     isLoading: Boolean,
     error: String?,
     onStart: (identifier: String?) -> Unit,
+    onCancel: () -> Unit = {},
 ) {
     val inFlight = isLoading || deviceCode != null
 
@@ -91,6 +83,7 @@ fun LoginScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .safeDrawingPadding()
                 .padding(horizontal = 32.dp, vertical = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
@@ -110,7 +103,7 @@ fun LoginScreen(
             Spacer(Modifier.weight(1f))
 
             if (inFlight) {
-                SigningInState(onCancel = { onStart(null) })
+                SigningInState(onCancel = onCancel)
             } else {
                 SignInControls(error = error, onStart = { onStart(null) })
             }
@@ -125,20 +118,24 @@ private fun SignInControls(
     error: String?,
     onStart: () -> Unit,
 ) {
+    val haptics = rememberAgenCHaptics()
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Button(
-            onClick = onStart,
+            onClick = {
+                haptics.perform(HapticCue.Action)
+                onStart()
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(54.dp),
             shape = RoundedCornerShape(27.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Onboarding.accent),
         ) {
-            Text("Sign in", fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Color.White)
+            Text("Sign in", fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Onboarding.bg)
         }
 
         if (error != null) {
@@ -157,6 +154,7 @@ private fun SignInControls(
 /** The polling state from iOS: a spinner, "signing in", and a Cancel text button. */
 @Composable
 private fun SigningInState(onCancel: () -> Unit) {
+    val haptics = rememberAgenCHaptics()
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -172,73 +170,26 @@ private fun SigningInState(onCancel: () -> Unit) {
             color = Onboarding.ink.copy(alpha = 0.6f),
             fontSize = 15.sp,
         )
-        TextButton(onClick = onCancel) {
+        TextButton(
+            onClick = {
+                haptics.perform(HapticCue.Action)
+                onCancel()
+            },
+        ) {
             Text("Cancel", color = Onboarding.accent, fontSize = 15.sp)
         }
     }
 }
 
-/**
- * The real `agenc` wordmark vector, masked with the iOS shimmer: a purple
- * accentLight→accent→accentDeep gradient that sweeps left↔right forever (~2.6s), plus a soft glow.
- */
+/** The real `agenc` wordmark, kept crisp on the monochrome onboarding canvas. */
 @Composable
 private fun ShimmeringWordmark() {
-    val transition = rememberInfiniteTransition(label = "wordmark-shimmer")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2600),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "shimmer-phase",
+    Image(
+        painter = painterResource(R.drawable.agenc_wordmark),
+        contentDescription = "agenc",
+        contentScale = ContentScale.Fit,
+        modifier = Modifier.height(52.dp),
     )
-
-    // A wide sweep so the gradient travels fully across the wordmark.
-    val travel = 900f
-    val gradient = Brush.linearGradient(
-        colors = listOf(
-            Onboarding.accentLight,
-            Onboarding.accent,
-            Onboarding.accentDeep,
-            Onboarding.accent,
-            Onboarding.accentLight,
-        ),
-        start = Offset(-travel + travel * 2f * phase, 0f),
-        end = Offset(travel * 2f * phase, 0f),
-    )
-
-    Box(contentAlignment = Alignment.Center) {
-        // Soft purple glow behind the wordmark.
-        Box(
-            modifier = Modifier
-                .height(52.dp)
-                .width(200.dp)
-                .graphicsLayer { alpha = 0.55f }
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(Onboarding.accent.copy(alpha = 0.45f), Color.Transparent),
-                        radius = 220f,
-                    ),
-                ),
-        )
-        Image(
-            painter = painterResource(R.drawable.agenc_wordmark),
-            contentDescription = "agenc",
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
-                .height(52.dp)
-                // Offscreen compositing is REQUIRED for BlendMode.SrcIn to clip the gradient to the
-                // logotype's pixels — without it the mask has no destination and nothing renders.
-                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                // Paint the white logotype, then keep the shimmer gradient only over its pixels.
-                .drawWithContent {
-                    drawContent()
-                    drawRect(brush = gradient, blendMode = BlendMode.SrcIn)
-                },
-        )
-    }
 }
 
 @Composable
@@ -251,13 +202,13 @@ private fun ErrorLabel(error: String) {
         Icon(
             imageVector = Icons.Filled.WarningAmber,
             contentDescription = null,
-            tint = Onboarding.accent,
+            tint = Brand.danger,
             modifier = Modifier.size(16.dp),
         )
         Spacer(Modifier.width(6.dp))
         Text(
             text = error,
-            color = Color(0xFFEE9430),
+            color = Onboarding.ink,
             fontSize = 13.sp,
             textAlign = TextAlign.Center,
         )

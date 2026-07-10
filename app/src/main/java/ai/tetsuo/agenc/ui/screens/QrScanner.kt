@@ -4,6 +4,9 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.util.Log
+import ai.tetsuo.agenc.ui.HapticCue
+import ai.tetsuo.agenc.ui.Onboarding
+import ai.tetsuo.agenc.ui.rememberAgenCHaptics
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
 import androidx.camera.core.CameraSelector
@@ -21,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,16 +45,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.core.content.ContextCompat
-import ai.tetsuo.agenc.ui.Onboarding
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
@@ -118,7 +119,7 @@ fun QrScannerOverlay(
 }
 
 /** The live camera surface + ML Kit analysis pipeline. Only mounted once permission is granted. */
-@OptIn(ExperimentalGetImage::class)
+@androidx.annotation.OptIn(ExperimentalGetImage::class)
 @Composable
 private fun CameraScanner(
     onCode: (String) -> Unit,
@@ -126,7 +127,7 @@ private fun CameraScanner(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val haptics = LocalHapticFeedback.current
+    val haptics = rememberAgenCHaptics()
 
     // Fires the success callbacks exactly once across the stream of analysis frames.
     val handled = remember { AtomicBoolean(false) }
@@ -173,9 +174,9 @@ private fun CameraScanner(
                         barcodeScanner.process(input)
                             .addOnSuccessListener { barcodes ->
                                 val value = barcodes.firstOrNull { it.rawValue != null }?.rawValue
-                                if (value != null && handled.compareAndSet(false, true)) {
-                                    val code = extractPairCode(value)
-                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                val code = value?.let(::extractPairCode)
+                                if (code?.length == 8 && handled.compareAndSet(false, true)) {
+                                    haptics.perform(HapticCue.Confirm)
                                     onCode(code)
                                     onClose()
                                 }
@@ -214,7 +215,8 @@ private fun CameraScanner(
 /** Dark scrim chrome: a centered rounded viewfinder, a close (X) button, and the hint line. */
 @Composable
 private fun ScannerChrome(onClose: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize()) {
+    val haptics = rememberAgenCHaptics()
+    Box(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
         // Centered rounded viewfinder frame.
         Box(
             modifier = Modifier
@@ -229,11 +231,14 @@ private fun ScannerChrome(onClose: () -> Unit) {
 
         // Close (X) button, top-left.
         IconButton(
-            onClick = onClose,
+            onClick = {
+                haptics.perform(HapticCue.Action)
+                onClose()
+            },
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(12.dp)
-                .size(44.dp)
+                .size(48.dp)
                 .background(Color(0x99000000), shape = RoundedCornerShape(22.dp)),
         ) {
             Icon(
@@ -266,13 +271,17 @@ private fun PermissionPanel(
     onRetry: () -> Unit,
     onClose: () -> Unit,
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
+    val haptics = rememberAgenCHaptics()
+    Box(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
         IconButton(
-            onClick = onClose,
+            onClick = {
+                haptics.perform(HapticCue.Action)
+                onClose()
+            },
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(12.dp)
-                .size(44.dp)
+                .size(48.dp)
                 .background(Color(0x99000000), shape = RoundedCornerShape(22.dp)),
         ) {
             Icon(
@@ -308,14 +317,17 @@ private fun PermissionPanel(
                 modifier = Modifier.padding(top = 8.dp),
             )
             Button(
-                onClick = onRetry,
+                onClick = {
+                    haptics.perform(HapticCue.Action)
+                    onRetry()
+                },
                 modifier = Modifier
                     .padding(top = 20.dp)
                     .height(48.dp),
                 shape = RoundedCornerShape(24.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Onboarding.accent),
             ) {
-                Text("Retry", fontWeight = FontWeight.SemiBold, color = Color.White)
+                Text("Retry", fontWeight = FontWeight.SemiBold, color = Onboarding.bg)
             }
         }
     }

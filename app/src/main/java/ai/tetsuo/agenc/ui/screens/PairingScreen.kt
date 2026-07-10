@@ -1,15 +1,22 @@
 package ai.tetsuo.agenc.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,12 +30,13 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,21 +46,24 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.tetsuo.agenc.ui.AgenCTheme
+import ai.tetsuo.agenc.ui.Brand
+import ai.tetsuo.agenc.ui.HapticCue
 import ai.tetsuo.agenc.ui.Onboarding
+import ai.tetsuo.agenc.ui.rememberAgenCHaptics
 
 /**
  * "Connect your computer" — the Android port of iOS `PairGateView`, pixel-faithful to the reference.
  *
- * A purple laptop+phone icon, a white bold heading, a subtitle that renders `agenc remote on` in
- * monospace, a full-width purple "Scan QR code" pill, a dark code field (XXXX-XXXX placeholder), and
- * a dark "Connect" button that stays disabled until a code is entered. All over the shared
- * onboarding gradient background.
+ * A focused monochrome setup with one primary QR action and a secondary manual-code path.
  *
  * Stateless: the only local state is the raw code text the user is typing. Normalization (uppercase,
  * strip separators) happens here so the caller receives a clean code via [onClaimCode].
@@ -61,7 +72,8 @@ import ai.tetsuo.agenc.ui.Onboarding
  * @param isLinking true while a claim is in flight (spinner + disabled Connect).
  * @param error optional error string under the action.
  * @param onClaimCode fires with the normalized code when the user taps Connect.
- * @param onScanQr fires when the user taps Scan QR — the caller presents the camera.
+ * @param onScanQr optional host callback fired before this screen presents its CameraX overlay.
+ * @param initialCode optional deep-link code to prefill; it is never submitted automatically.
  */
 @Composable
 fun PairingScreen(
@@ -70,26 +82,36 @@ fun PairingScreen(
     error: String?,
     onClaimCode: (String) -> Unit,
     onScanQr: () -> Unit,
+    initialCode: String? = null,
 ) {
-    var code by remember { mutableStateOf("") }
-    var showScanner by remember { mutableStateOf(false) }
+    val haptics = rememberAgenCHaptics()
+    var code by rememberSaveable { mutableStateOf("") }
+    var showScanner by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(initialCode) {
+        val prefill = initialCode?.let(::normalizePairCode)
+        if (prefill?.length == 8) code = formatPairCode(prefill)
+    }
     val normalized = normalizePairCode(code)
-    val canLink = normalized.isNotEmpty() && !isLinking && machineName == null
+    val canLink = normalized.length == 8 && !isLinking && machineName == null
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Onboarding.bg)
             .onboardingBackground()
-            .padding(horizontal = 28.dp, vertical = 24.dp),
+            .safeDrawingPadding()
+            .imePadding()
+            .padding(horizontal = 28.dp),
     ) {
         Column(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = maxHeight)
+                .padding(vertical = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Spacer(Modifier.weight(1f))
-
             Icon(
                 imageVector = Icons.Filled.DevicesOther,
                 contentDescription = null,
@@ -114,9 +136,10 @@ fun PairingScreen(
 
             Spacer(Modifier.height(26.dp))
 
-            // Full-width purple "Scan QR code" pill.
+            // High-contrast primary action.
             Button(
                 onClick = {
+                    haptics.perform(HapticCue.Action)
                     onScanQr()
                     showScanner = true
                 },
@@ -124,64 +147,94 @@ fun PairingScreen(
                     .fillMaxWidth()
                     .height(54.dp),
                 shape = RoundedCornerShape(27.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Onboarding.accent),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Onboarding.accent,
+                    contentColor = Onboarding.bg,
+                ),
             ) {
                 Icon(
                     Icons.Filled.QrCodeScanner,
                     contentDescription = null,
                     modifier = Modifier.size(20.dp),
-                    tint = Color.White,
+                    tint = Onboarding.bg,
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("Scan QR code", fontWeight = FontWeight.SemiBold, color = Color.White, fontSize = 16.sp)
+                Text("Scan QR code", fontWeight = FontWeight.SemiBold, color = Onboarding.bg, fontSize = 16.sp)
             }
 
             Spacer(Modifier.height(12.dp))
 
-            // Dark code field (XXXX-XXXX).
-            TextField(
-                value = code,
-                onValueChange = { code = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                singleLine = true,
-                enabled = !isLinking && machineName == null,
-                placeholder = {
-                    Text(
-                        "XXXX-XXXX",
+            // Dark code field (XXXX-XXXX). The focus border replaces a blinking caret, which would
+            // otherwise sit awkwardly in the middle of the centered placeholder.
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Pairing code",
+                    color = Onboarding.ink.copy(alpha = 0.72f),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
+                )
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = formatPairCode(it) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(62.dp),
+                    singleLine = true,
+                    enabled = !isLinking && machineName == null,
+                    placeholder = {
+                        Text(
+                            "XXXX-XXXX",
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                            fontFamily = FontFamily.Monospace,
+                            color = Onboarding.ink.copy(alpha = 0.34f),
+                            fontSize = 22.sp,
+                            letterSpacing = 4.sp,
+                        )
+                    },
+                    textStyle = TextStyle(
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
                         fontFamily = FontFamily.Monospace,
-                        color = Onboarding.ink.copy(alpha = 0.35f),
                         fontSize = 22.sp,
                         letterSpacing = 4.sp,
-                    )
-                },
-                textStyle = TextStyle(
-                    textAlign = TextAlign.Center,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 22.sp,
-                    letterSpacing = 4.sp,
-                    color = Onboarding.ink,
-                ),
-                shape = RoundedCornerShape(12.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Onboarding.ink.copy(alpha = 0.08f),
-                    unfocusedContainerColor = Onboarding.ink.copy(alpha = 0.08f),
-                    disabledContainerColor = Onboarding.ink.copy(alpha = 0.05f),
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent,
-                    cursorColor = Onboarding.accent,
-                ),
-            )
+                        color = Onboarding.ink,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Characters,
+                        autoCorrectEnabled = false,
+                        keyboardType = KeyboardType.Ascii,
+                        imeAction = ImeAction.Done,
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = { if (canLink) onClaimCode(normalized) },
+                    ),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Onboarding.ink,
+                        unfocusedTextColor = Onboarding.ink,
+                        disabledTextColor = Onboarding.ink.copy(alpha = 0.42f),
+                        focusedContainerColor = Onboarding.ink.copy(alpha = 0.07f),
+                        unfocusedContainerColor = Onboarding.ink.copy(alpha = 0.05f),
+                        disabledContainerColor = Onboarding.ink.copy(alpha = 0.04f),
+                        focusedBorderColor = Color.Transparent,
+                        unfocusedBorderColor = Color.Transparent,
+                        disabledBorderColor = Color.Transparent,
+                        errorBorderColor = Color.Transparent,
+                        cursorColor = Color.Transparent,
+                        errorCursorColor = Color.Transparent,
+                    ),
+                )
+            }
 
             Spacer(Modifier.height(12.dp))
 
-            // Dark "Connect" button — disabled until a code is entered.
+            // Secondary action — enabled only when all eight code characters are present.
             Button(
-                onClick = { onClaimCode(normalized) },
+                onClick = {
+                    haptics.perform(HapticCue.Action)
+                    onClaimCode(normalized)
+                },
                 enabled = canLink,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -214,7 +267,6 @@ fun PairingScreen(
                 error != null -> PairErrorLabel(error)
             }
 
-            Spacer(Modifier.weight(1f))
         }
     }
 
@@ -222,8 +274,11 @@ fun PairingScreen(
     if (showScanner) {
         QrScannerOverlay(
             onCode = {
-                showScanner = false
-                onClaimCode(it)
+                val scanned = normalizePairCode(it)
+                if (scanned.length == 8) {
+                    showScanner = false
+                    onClaimCode(scanned)
+                }
             },
             onClose = { showScanner = false },
         )
@@ -246,13 +301,13 @@ private fun SuccessBanner(machineName: String) {
         Icon(
             imageVector = Icons.Filled.CheckCircle,
             contentDescription = null,
-            tint = Color(0xFF34C759),
+            tint = Brand.success,
             modifier = Modifier.size(18.dp),
         )
         Spacer(Modifier.width(8.dp))
         Text(
             text = "Linked to $machineName",
-            color = Color(0xFF34C759),
+            color = Onboarding.ink,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
         )
@@ -269,17 +324,23 @@ private fun PairErrorLabel(error: String) {
         Icon(
             imageVector = Icons.Filled.WarningAmber,
             contentDescription = null,
-            tint = Color(0xFFEE9430),
+            tint = Brand.danger,
             modifier = Modifier.size(16.dp),
         )
         Spacer(Modifier.width(6.dp))
-        Text(text = error, color = Color(0xFFEE9430), fontSize = 13.sp, textAlign = TextAlign.Center)
+        Text(text = error, color = Onboarding.ink, fontSize = 13.sp, textAlign = TextAlign.Center)
     }
 }
 
 /** Uppercase + keep only letters/digits (matches the iOS `normalized` computed property). */
 internal fun normalizePairCode(raw: String): String =
     raw.uppercase().filter { it.isLetterOrDigit() }
+
+/** Human-friendly XXXX-XXXX presentation while keeping the backend payload separator-free. */
+private fun formatPairCode(raw: String): String {
+    val normalized = normalizePairCode(raw).take(8)
+    return if (normalized.length > 4) normalized.take(4) + "-" + normalized.drop(4) else normalized
+}
 
 @Preview(name = "Pairing — empty", showBackground = true, backgroundColor = 0xFF101116)
 @Composable

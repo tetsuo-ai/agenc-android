@@ -1,330 +1,228 @@
 package ai.tetsuo.agenc.ui.screens
 
+import ai.tetsuo.agenc.model.SessionLifecycle
+import ai.tetsuo.agenc.model.SessionSummary
+import ai.tetsuo.agenc.ui.AgenCTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.filled.AddComment
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ai.tetsuo.agenc.model.SessionLifecycle
-import ai.tetsuo.agenc.model.SessionSummary
-import ai.tetsuo.agenc.ui.AgenCTheme
-import ai.tetsuo.agenc.ui.Brand
 
-/**
- * Home — the Android port of iOS `HomeView`. A greeting, a prominent purple "New chat" gradient
- * button, two count tiles (Sessions / Need you), a "Waiting on you" section, and recent sessions.
- *
- * Follows the SYSTEM appearance. Stateless: sessions + callbacks are passed in.
- *
- * @param sessions the full session list (Home derives counts + recents from it).
- * @param onNewChat fires from the New chat call-to-action.
- * @param onOpen fires when a session row is tapped.
- */
+/** Monochrome post-login control surface. All state and callbacks remain host-owned. */
 @Composable
 fun HomeScreen(
     sessions: List<SessionSummary>,
+    connectionStatus: ConnectionStatus = ConnectionStatus.Offline,
     onNewChat: () -> Unit,
     onOpen: (SessionSummary) -> Unit,
 ) {
-    val colors = MaterialTheme.colorScheme
     val waiting = sessions.filter {
-        it.lifecycle is SessionLifecycle.AwaitingPermission || it.lifecycle is SessionLifecycle.AwaitingInput
+        it.lifecycle is SessionLifecycle.AwaitingPermission ||
+            it.lifecycle is SessionLifecycle.AwaitingInput
     }
+    val waitingIds = waiting.mapTo(mutableSetOf()) { it.id }
+    val recent = sessions.filterNot { it.id in waitingIds }.take(5)
+    val recentSectionIndex = if (waiting.isEmpty()) "02" else "03"
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.background)
+            .background(MainPalette.canvas)
             .statusBarsPadding(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 20.dp, end = 20.dp, top = 16.dp, bottom = 120.dp,
+        contentPadding = PaddingValues(
+            start = 20.dp,
+            end = 20.dp,
+            top = 18.dp,
+            bottom = 24.dp,
         ),
-        verticalArrangement = Arrangement.spacedBy(24.dp),
+        verticalArrangement = Arrangement.spacedBy(22.dp),
     ) {
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Home",
-                    color = colors.onBackground,
-                    fontSize = 34.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-                StatusPill(text = "Connected · This computer (remote)", tint = Brand.success)
-            }
+        item(key = "home-header") {
+            MainScreenHeader(
+                section = "AgenC / Control",
+                title = "Home",
+                trailing = { ConnectionIndicator(connectionStatus) },
+            )
         }
 
-        item { NewChatCta(onNewChat) }
+        item(key = "new-session") {
+            PrimarySessionAction(onClick = onNewChat)
+        }
 
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                CountTile(
-                    icon = Icons.AutoMirrored.Filled.Chat,
-                    value = sessions.size,
-                    label = "Sessions",
-                    tint = Brand.accent,
-                    modifier = Modifier.weight(1f),
-                )
-                CountTile(
-                    icon = Icons.Filled.NotificationsActive,
-                    value = waiting.size,
-                    label = "Need you",
-                    tint = Brand.attention,
-                    modifier = Modifier.weight(1f),
-                )
+        item(key = "home-metrics") {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SectionHeading(index = "01", title = "Overview")
+                HomeMetricStrip(sessionCount = sessions.size, attentionCount = waiting.size)
             }
         }
 
         if (waiting.isNotEmpty()) {
-            item {
-                SectionHeader(title = "Waiting on you", tint = Brand.attention)
+            item(key = "attention-heading") {
+                SectionHeading(index = "02", title = "Needs attention")
             }
-            items(waiting.size) { i ->
-                val s = waiting[i]
-                HomeSessionRow(summary = s, onClick = { onOpen(s) })
+            itemsIndexed(
+                items = waiting,
+                key = { _, session -> "attention-${session.id}" },
+            ) { index, session ->
+                SessionLine(
+                    summary = session,
+                    sequence = index + 1,
+                    onOpen = { onOpen(session) },
+                    showDivider = index != waiting.lastIndex,
+                )
             }
         }
 
-        item {
-            SectionHeader(title = "Recent sessions", tint = colors.onSurfaceVariant)
+        item(key = "recent-heading") {
+            SectionHeading(index = recentSectionIndex, title = "Recent")
         }
-        if (sessions.isEmpty()) {
-            item {
-                Text(
-                    text = "No sessions yet. Start one with “New chat” above.",
-                    color = colors.onSurfaceVariant,
-                    fontSize = 15.sp,
+
+        if (recent.isEmpty()) {
+            item(key = "recent-empty") {
+                EmptyHomeMessage(
+                    text = if (sessions.isEmpty()) {
+                        "No sessions yet. Start one above and it will stay within reach here."
+                    } else {
+                        "Everything active is already grouped under needs attention."
+                    },
                 )
             }
         } else {
-            items(minOf(sessions.size, 5)) { i ->
-                val s = sessions[i]
-                HomeSessionRow(summary = s, onClick = { onOpen(s) })
+            itemsIndexed(
+                items = recent,
+                key = { _, session -> "recent-${session.id}" },
+            ) { index, session ->
+                SessionLine(
+                    summary = session,
+                    sequence = index + 1,
+                    onOpen = { onOpen(session) },
+                    showDivider = index != recent.lastIndex,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun NewChatCta(onNewChat: () -> Unit) {
+private fun HomeMetricStrip(sessionCount: Int, attentionCount: Int) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onNewChat)
-            .background(
-                Brush.linearGradient(listOf(Brand.accent, Color(0xFF8A3FD0))),
-                RoundedCornerShape(16.dp),
-            )
+            .border(1.dp, MainPalette.line, RoundedCornerShape(18.dp))
+            .background(MainPalette.surface, RoundedCornerShape(18.dp))
             .padding(horizontal = 18.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = Icons.Filled.AddComment,
-            contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier.size(22.dp),
+        HomeMetric(
+            value = sessionCount,
+            label = "Sessions",
+            note = if (sessionCount == 1) "workspace" else "workspaces",
+            modifier = Modifier.weight(1f),
         )
-        Spacer(Modifier.width(10.dp))
-        Text("New chat", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.weight(1f))
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-            contentDescription = null,
-            tint = Color.White.copy(alpha = 0.8f),
-            modifier = Modifier.size(18.dp),
-        )
-    }
-}
-
-@Composable
-private fun CountTile(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    value: Int,
-    label: String,
-    tint: Color,
-    modifier: Modifier = Modifier,
-) {
-    val colors = MaterialTheme.colorScheme
-    Column(
-        modifier = modifier
-            .background(colors.surfaceVariant, RoundedCornerShape(16.dp))
-            .border(1.dp, tint.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
         Box(
             modifier = Modifier
-                .size(36.dp)
-                .background(tint.copy(alpha = 0.15f), RoundedCornerShape(10.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = "$value",
-                color = colors.onSurface,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(label, color = colors.onSurfaceVariant, fontSize = 14.sp)
-        }
+                .width(1.dp)
+                .height(52.dp)
+                .background(MainPalette.line),
+        )
+        Spacer(Modifier.width(18.dp))
+        HomeMetric(
+            value = attentionCount,
+            label = "Need you",
+            note = if (attentionCount == 0) "all clear" else "action required",
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
 @Composable
-private fun SectionHeader(title: String, tint: Color) {
-    Text(
-        text = title,
-        color = tint,
-        fontSize = 15.sp,
-        fontWeight = FontWeight.SemiBold,
-    )
+private fun HomeMetric(
+    value: Int,
+    label: String,
+    note: String,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = value.toString().padStart(2, '0'),
+            color = MainPalette.ink,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Medium,
+        )
+        Text(
+            text = label.uppercase(),
+            color = MainPalette.muted,
+            style = MaterialTheme.typography.labelSmall,
+            letterSpacing = .9.sp,
+        )
+        Text(note, color = MainPalette.quiet, style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable
-private fun HomeSessionRow(summary: SessionSummary, onClick: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
+private fun EmptyHomeMessage(text: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .background(colors.surfaceVariant, RoundedCornerShape(14.dp))
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .border(1.dp, MainPalette.lineSoft, RoundedCornerShape(16.dp))
+            .padding(16.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = summary.title,
-                color = colors.onSurface,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (summary.subtitle.isNotBlank()) {
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = summary.subtitle,
-                    color = colors.onSurfaceVariant,
-                    fontSize = 12.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Filled.Folder,
-                    contentDescription = null,
-                    tint = colors.onSurfaceVariant.copy(alpha = 0.7f),
-                    modifier = Modifier.size(12.dp),
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = summary.cwd.ifBlank { "default" },
-                    color = colors.onSurfaceVariant.copy(alpha = 0.7f),
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        Spacer(Modifier.width(10.dp))
-        Column(horizontalAlignment = Alignment.End) {
-            HomeLifecyclePill(summary.lifecycle)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = summary.updated,
-                color = colors.onSurfaceVariant.copy(alpha = 0.7f),
-                fontSize = 11.sp,
-            )
-        }
-    }
-}
-
-@Composable
-private fun HomeLifecyclePill(lifecycle: SessionLifecycle) {
-    val tint = lifecycle.pillTint()
-    Row(
-        modifier = Modifier
-            .background(tint.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (lifecycle.isActive) {
-            Box(modifier = Modifier.size(6.dp).background(tint, CircleShape))
-            Spacer(Modifier.width(5.dp))
-        }
-        Text(text = lifecycle.label, color = tint, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-    }
-}
-
-/** A small status capsule: a dot + label, tinted. Mirrors iOS `StatusPill`. */
-@Composable
-internal fun StatusPill(text: String, tint: Color) {
-    Row(
-        modifier = Modifier
-            .background(tint.copy(alpha = 0.15f), RoundedCornerShape(20.dp))
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(modifier = Modifier.size(7.dp).background(tint, CircleShape))
-        Spacer(Modifier.width(6.dp))
-        Text(text = text, color = tint, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Text(
+            text = "—",
+            color = MainPalette.quiet,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(text, color = MainPalette.muted, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
 private fun homeSamples(): List<SessionSummary> = listOf(
-    SessionSummary("sess-1", "Refactor auth flow", SessionLifecycle.Running, "/Users/pavel/agenc-core", "wiring login", "now"),
-    SessionSummary("sess-2", "Port iOS screens", SessionLifecycle.AwaitingPermission, "/Users/pavel/AgenC-Android", "needs approval", "2m"),
+    SessionSummary("sess-1", "Refactor auth flow", SessionLifecycle.Running, "/Users/pavel/agenc-core", "Wiring login", "now"),
+    SessionSummary("sess-2", "Port Android shell", SessionLifecycle.AwaitingPermission, "/Users/pavel/agenc-android", "Needs approval", "2m"),
 )
 
-@Preview(name = "Home", showBackground = true, backgroundColor = 0xFFFFFFFF)
+@Preview(name = "Home / dark", showBackground = true, backgroundColor = 0xFF000000)
 @Composable
 private fun HomeScreenPreview() {
     AgenCTheme {
-        HomeScreen(sessions = homeSamples(), onNewChat = {}, onOpen = {})
+        HomeScreen(
+            sessions = homeSamples(),
+            connectionStatus = ConnectionStatus.Connected,
+            onNewChat = {},
+            onOpen = {},
+        )
     }
 }
 
-@Preview(name = "Home — empty", showBackground = true, backgroundColor = 0xFFFFFFFF)
+@Preview(name = "Home / empty", showBackground = true, backgroundColor = 0xFF000000)
 @Composable
 private fun HomeScreenEmptyPreview() {
-    AgenCTheme {
-        HomeScreen(sessions = emptyList(), onNewChat = {}, onOpen = {})
-    }
+    AgenCTheme { HomeScreen(sessions = emptyList(), onNewChat = {}, onOpen = {}) }
 }

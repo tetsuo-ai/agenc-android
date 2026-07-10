@@ -1,11 +1,23 @@
 package ai.tetsuo.agenc.ui.chat
 
+import ai.tetsuo.agenc.model.PendingElicitation
+import ai.tetsuo.agenc.model.PendingPermission
+import ai.tetsuo.agenc.model.PermissionDecisionAction
+import ai.tetsuo.agenc.model.PermissionDecisionState
+import ai.tetsuo.agenc.model.QuestionOption
+import ai.tetsuo.agenc.ui.AgenCTheme
+import ai.tetsuo.agenc.ui.Brand
+import ai.tetsuo.agenc.ui.ChatPalette
+import ai.tetsuo.agenc.ui.HapticCue
+import ai.tetsuo.agenc.ui.rememberAgenCHaptics
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -31,15 +43,14 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -47,17 +58,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ai.tetsuo.agenc.model.PendingElicitation
-import ai.tetsuo.agenc.model.PendingPermission
-import ai.tetsuo.agenc.model.QuestionOption
-import ai.tetsuo.agenc.ui.AgenCTheme
-import ai.tetsuo.agenc.ui.Brand
-import ai.tetsuo.agenc.ui.ChatPalette
 
 /**
- * The allow/deny bottom sheet for a tool permission request. Big, full-width capsules:
- * Allow once (filled purple) / Allow for session (soft-purple outline) / Deny (subtle). Each tap
- * fires haptic feedback via [LocalHapticFeedback] — a confirm bump for the affirmative actions,
+ * The allow/deny bottom sheet for a tool permission request. Big, full-width monochrome capsules.
+ * fires semantic haptic feedback — a confirm bump for the affirmative actions,
  * a softer reject for deny. The request blocks the turn, so the sheet cannot be swiped to dismiss
  * (no dismiss callback wired); only Allow/Deny exit it.
  *
@@ -67,6 +71,7 @@ import ai.tetsuo.agenc.ui.ChatPalette
 @Composable
 fun PermissionSheet(
     permission: PendingPermission,
+    decisionState: PermissionDecisionState = PermissionDecisionState.Idle,
     onApprove: (scope: String) -> Unit,
     onDeny: () -> Unit,
 ) {
@@ -77,18 +82,22 @@ fun PermissionSheet(
         containerColor = ChatPalette.canvas,
         dragHandle = null,
     ) {
-        PermissionSheetContent(permission, onApprove, onDeny)
+        PermissionSheetContent(permission, decisionState, onApprove, onDeny)
     }
 }
 
 /** Sheet body split out so it renders standalone in @Preview (ModalBottomSheet needs a host). */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun PermissionSheetContent(
     permission: PendingPermission,
+    decisionState: PermissionDecisionState = PermissionDecisionState.Idle,
     onApprove: (scope: String) -> Unit,
     onDeny: () -> Unit,
 ) {
-    val haptics = LocalHapticFeedback.current
+    val haptics = rememberAgenCHaptics()
+    val submitting = decisionState as? PermissionDecisionState.Submitting
+    val actionsEnabled = submitting == null
     Column(modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(top = 20.dp, start = 24.dp, end = 24.dp),
@@ -96,10 +105,10 @@ internal fun PermissionSheetContent(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Box(
-                modifier = Modifier.size(60.dp).background(Brand.accentSoft, CircleShape),
+                modifier = Modifier.size(60.dp).background(Color.White.copy(alpha = 0.08f), CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Filled.Shield, contentDescription = null, tint = Brand.accent, modifier = Modifier.size(28.dp))
+                Icon(Icons.Filled.Shield, contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp))
             }
             Text(
                 "ALLOW THIS ACTION?",
@@ -120,8 +129,29 @@ internal fun PermissionSheetContent(
                 fontSize = 14.sp,
                 textAlign = TextAlign.Center,
             )
+            permission.diff?.let { diff ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
+                        .border(1.dp, ChatPalette.divider, RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(diff.filePath, color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    Text(
+                        "${diff.operation}  +${diff.additions}  −${diff.removals}",
+                        color = ChatPalette.secondaryText,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
             if (permission.permissions.isNotEmpty()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     for (p in permission.permissions) {
                         Text(
                             p,
@@ -143,16 +173,52 @@ internal fun PermissionSheetContent(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            CapsuleButton("Allow once", Icons.Filled.Check, CapsuleStyle.Primary) {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            if (decisionState is PermissionDecisionState.Failed) {
+                Text(
+                    decisionState.message,
+                    color = Brand.danger,
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            CapsuleButton(
+                title = if (submitting?.action == PermissionDecisionAction.AllowOnce) {
+                    "ALLOWING…"
+                } else {
+                    "Allow once"
+                },
+                icon = Icons.Filled.Check,
+                style = CapsuleStyle.Primary,
+                enabled = actionsEnabled,
+            ) {
+                haptics.perform(HapticCue.Confirm)
                 onApprove("once")
             }
-            CapsuleButton("Allow for session", Icons.Filled.CheckCircle, CapsuleStyle.SecondaryAccent) {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            CapsuleButton(
+                title = if (submitting?.action == PermissionDecisionAction.AllowSession) {
+                    "ALLOWING…"
+                } else {
+                    "Allow all for session"
+                },
+                icon = Icons.Filled.CheckCircle,
+                style = CapsuleStyle.SecondaryAccent,
+                enabled = actionsEnabled,
+            ) {
+                haptics.perform(HapticCue.Confirm)
                 onApprove("session")
             }
-            CapsuleButton("Deny", Icons.Filled.Close, CapsuleStyle.Deny) {
-                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            CapsuleButton(
+                title = if (submitting?.action == PermissionDecisionAction.Deny) {
+                    "DENYING…"
+                } else {
+                    "Deny"
+                },
+                icon = Icons.Filled.Close,
+                style = CapsuleStyle.Deny,
+                enabled = actionsEnabled,
+            ) {
+                haptics.perform(HapticCue.Reject)
                 onDeny()
             }
         }
@@ -167,12 +233,13 @@ private fun CapsuleButton(
     title: String,
     icon: ImageVector,
     style: CapsuleStyle,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val (bg, fg, border) = when (style) {
-        CapsuleStyle.Primary -> Triple(Brand.accent, Color.White, Color.Transparent)
-        CapsuleStyle.SecondaryAccent -> Triple(Brand.accentSoft, Brand.accent, Brand.accent.copy(alpha = 0.35f))
-        CapsuleStyle.Deny -> Triple(Color.White.copy(alpha = 0.05f), ChatPalette.secondaryText, Color.White.copy(alpha = 0.10f))
+        CapsuleStyle.Primary -> Triple(ChatPalette.sendButton, ChatPalette.sendGlyph, Color.Transparent)
+        CapsuleStyle.SecondaryAccent -> Triple(Color.White.copy(alpha = 0.06f), Color.White, Color.White.copy(alpha = 0.24f))
+        CapsuleStyle.Deny -> Triple(Brand.danger.copy(alpha = 0.16f), Color.White, Brand.danger)
     }
     Row(
         modifier = Modifier
@@ -180,7 +247,8 @@ private fun CapsuleButton(
             .heightIn(min = 52.dp)
             .background(bg, RoundedCornerShape(50))
             .border(1.dp, border, RoundedCornerShape(50))
-            .clickable(onClickLabel = title, onClick = onClick)
+            .clickable(enabled = enabled, onClickLabel = title, onClick = onClick)
+            .alpha(if (enabled) 1f else 0.48f)
             .padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
@@ -218,13 +286,14 @@ internal fun ElicitationSheetContent(
     elicitation: PendingElicitation,
     onAnswer: (String) -> Unit,
 ) {
-    var other by remember { mutableStateOf("") }
+    var other by rememberSaveable { mutableStateOf("") }
+    val haptics = rememberAgenCHaptics()
     Column(
         modifier = Modifier.fillMaxWidth().padding(20.dp).padding(bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(Icons.Filled.QuestionAnswer, contentDescription = null, tint = Brand.accent, modifier = Modifier.size(20.dp))
+            Icon(Icons.Filled.QuestionAnswer, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
             Text("The agent needs your input", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
         }
         Text(elicitation.question, color = Color.White, fontSize = 15.sp)
@@ -237,8 +306,13 @@ internal fun ElicitationSheetContent(
                     fontSize = 15.sp,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(min = 48.dp)
                         .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(10.dp))
-                        .clickable { onAnswer(opt.label) }
+                        .border(1.dp, ChatPalette.divider, RoundedCornerShape(10.dp))
+                        .clickable {
+                            haptics.perform(HapticCue.Confirm)
+                            onAnswer(opt.label)
+                        }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                 )
             }
@@ -261,22 +335,25 @@ internal fun ElicitationSheetContent(
                         onValueChange = { other = it },
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = TextStyle(color = Color.White, fontSize = 15.sp),
-                        cursorBrush = SolidColor(Brand.accent),
+                        cursorBrush = SolidColor(Color.White),
                         maxLines = 3,
                     )
                 }
                 val enabled = other.trim().isNotEmpty()
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
-                        .background(if (enabled) Brand.accent else ChatPalette.sendButtonDisabled, CircleShape)
+                        .size(48.dp)
+                        .background(if (enabled) ChatPalette.sendButton else ChatPalette.sendButtonDisabled, CircleShape)
                         .clickable(enabled = enabled, onClickLabel = "Send answer") {
                             val t = other.trim()
-                            if (t.isNotEmpty()) onAnswer(t)
+                            if (t.isNotEmpty()) {
+                                haptics.perform(HapticCue.Confirm)
+                                onAnswer(t)
+                            }
                         },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Filled.ArrowUpward, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Filled.ArrowUpward, contentDescription = null, tint = ChatPalette.sendGlyph, modifier = Modifier.size(18.dp))
                 }
             }
         }

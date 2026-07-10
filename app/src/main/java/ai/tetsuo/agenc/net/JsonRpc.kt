@@ -8,7 +8,12 @@ package ai.tetsuo.agenc.net
  */
 sealed interface JsonRpcInbound {
     data class Response(val id: Int, val result: JsonValue) : JsonRpcInbound
-    data class Failure(val id: Int?, val code: Int, val message: String) : JsonRpcInbound
+    data class Failure(
+        val id: Int?,
+        val code: Int,
+        val message: String,
+        val dataCode: String?,
+    ) : JsonRpcInbound
     data class Notification(val method: String, val params: JsonValue) : JsonRpcInbound
 
     companion object {
@@ -26,6 +31,7 @@ sealed interface JsonRpcInbound {
                     id = id,
                     code = err["code"]?.intValue ?: -1,
                     message = err["message"]?.stringValue ?: "RPC error",
+                    dataCode = err["data"]?.get("code")?.stringValue,
                 )
             }
             if (id != null) {

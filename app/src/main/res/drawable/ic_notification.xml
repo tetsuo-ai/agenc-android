@@ -1,11 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AgenC notification mark, converted from branding/agenc-logo.svg.
+
+  Android status-bar icons are alpha masks: the artwork must be opaque white on transparent and
+  System UI supplies the final foreground colour. The expanded viewport keeps the source mark
+  inside the recommended 24dp notification safe area without replacing it with a generic glyph.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24"
-    android:tint="?attr/colorControlNormal">
-    <!-- Monochrome AgenC diamond for the status bar (must be white/alpha-only). -->
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M12,3 L21,12 L12,21 L3,12 Z" />
+    android:viewportWidth="560"
+    android:viewportHeight="560">
+    <group
+        android:translateX="54.09"
+        android:translateY="54.075">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M451.82,350.07L426.33,375.49L400.9,350.07L426.33,324.58Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M451.82,400.98L400.9,451.84L375.41,426.41L426.33,375.49Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M349.99,400.98L375.42,426.41L349.99,451.84L324.56,426.41Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M25.43,76.42L0,101.85L25.43,127.34L50.92,101.85L25.43,76.42ZM50.91,0.02L0,50.93L25.43,76.42L76.35,25.5L50.91,0.02ZM101.77,0.02L76.34,25.51L101.77,50.94L127.26,25.51L101.77,0.02Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M133.6,165.48L133.68,165.52L165.44,133.67L133.59,165.47ZM349.99,0L324.56,25.51L349.99,50.94L375.42,25.51L349.99,0ZM400.88,0L375.41,25.51L426.31,76.41L451.82,50.94L400.88,0ZM426.31,76.41L400.88,101.84L426.31,127.35L451.82,101.84L426.31,76.41Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M50.91,350.07L25.43,375.49L0,350.07L25.43,324.58Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M76.34,426.41L50.91,451.84L0,400.98L25.43,375.49Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M127.26,426.41L101.83,451.84L76.34,426.41L101.77,400.98Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M451.82,152.77L426.31,127.34L353.16,200.5L251.33,98.67L324.57,25.51L299.09,0L225.89,73.24L152.7,0L127.27,25.51L200.43,98.67L165.46,133.68L133.7,165.53L98.64,200.54L25.43,127.34L0,152.77L73.2,225.97L0,299.16L25.43,324.59L98.63,251.39L165.45,318.21L200.42,353.22L127.26,426.42L152.69,451.85L225.89,378.65L299.09,451.85L324.56,426.42L251.32,353.22L318.14,286.44L353.16,251.38L426.31,324.58L451.82,299.15L378.67,225.95L451.82,152.77ZM225.89,321.38L130.43,225.92L225.89,130.51L321.39,225.92L225.89,321.38Z" />
+    </group>
 </vector>

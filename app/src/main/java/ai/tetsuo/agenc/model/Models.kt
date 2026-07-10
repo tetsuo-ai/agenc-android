@@ -28,7 +28,12 @@ sealed interface EventMsg {
     ) : EventMsg
     data class ToolProgress(val callId: String, val chunk: String) : EventMsg
     data class ToolCallCompleted(
-        val callId: String, val result: String, val isError: Boolean, val diff: FileMutation?,
+        val callId: String,
+        val result: String,
+        val isError: Boolean,
+        val diff: FileMutation?,
+        /** Strictly parsed clean result; rendered only when the matching tool is request_ledger_transfer. */
+        val ledgerResult: LedgerTransferResult? = null,
     ) : EventMsg
     data class TokenCount(val usage: TokenUsage) : EventMsg
     data class RequestPermissions(val pending: PendingPermission) : EventMsg
@@ -105,6 +110,9 @@ sealed interface TranscriptItem {
     data class Divider(val msgId: String, val kind: DividerKind) : TranscriptItem {
         override val id get() = "d-$msgId"
     }
+    data class LedgerTransfer(val result: LedgerTransferResult) : TranscriptItem {
+        override val id get() = "ledger-${result.intentId}"
+    }
 
     val isAssistant: Boolean get() = this is Assistant
 }
@@ -118,6 +126,8 @@ data class PersistedMsg(
     var toolKind: String = "",
     var toolStatus: String = "",   // running | success | error
     var toolResult: String = "",
+    /** Canonical typed receipt JSON for role=ledger_transfer. */
+    var ledgerResult: String = "",
 )
 
 // MARK: - Lifecycle
@@ -163,7 +173,31 @@ data class PendingPermission(
     val permissions: List<String>,
 )
 
+/** Authoritative client state for one permission decision; keyed by the daemon requestId. */
+enum class PermissionDecisionAction { AllowOnce, AllowSession, Deny }
+
+sealed interface PermissionDecisionState {
+    data object Idle : PermissionDecisionState
+    data class Submitting(val action: PermissionDecisionAction) : PermissionDecisionState
+    data class Failed(val message: String) : PermissionDecisionState
+}
+
 data class QuestionOption(val id: String, val label: String)
+
+/**
+ * Trusted, machine-readable action emitted only by Core's built-in `request_ledger_transfer` tool.
+ * Monetary values arrive as decimal text on the wire and are parsed only after strict validation,
+ * so JavaScript number precision can never change the amount shown or signed on the phone.
+ */
+data class LedgerSolanaTransferClientAction(
+    val intentId: String,
+    /** Core-generated high-entropy challenge echoed by the exact response. */
+    val responseNonce: String,
+    val to: String,
+    val lamports: Long,
+    val note: String?,
+    val expiresAtEpochMillis: Long,
+)
 
 data class PendingElicitation(
     val id: String,            // requestId
@@ -171,6 +205,15 @@ data class PendingElicitation(
     val question: String,
     val options: List<QuestionOption>,
     var allowsOther: Boolean = true,
+    val clientAction: LedgerSolanaTransferClientAction? = null,
+)
+
+/** A capability-routed Ledger request can arrive even when its chat is not open/attached. */
+data class PendingLedgerInteraction(
+    val sessionId: String,
+    val elicitation: PendingElicitation,
+    /** Pairing id (or a local-daemon sentinel) that owns this request/response namespace. */
+    val hostBinding: String,
 )
 
 // MARK: - Cost
@@ -224,4 +267,12 @@ data class Identity(
     var displayName: String,
     var handle: String,
     var tier: Tier,
+    /** Stable account owner used to verify that phone auth and Core `/login` are the same person. */
+    var accountId: String? = null,
+    /** False when Core confirms the person but does not expose subscription data. */
+    var tierVerified: Boolean = true,
+    /** True only after the runtime identity matches the phone identity by account id or email. */
+    var runtimeLinked: Boolean = false,
+    /** A connected runtime reported a different stable account id. */
+    var runtimeMismatch: Boolean = false,
 )

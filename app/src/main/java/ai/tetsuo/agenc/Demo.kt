@@ -1,14 +1,12 @@
 package ai.tetsuo.agenc
 
 /**
- * Scripted demo mode for the recorded walkthrough: sending a voice message in the chat triggers a
- * REAL Ledger transfer (signed on the Flex, broadcast on-chain) to the agent wallet, then posts a
- * fixed success reply. The trigger + amount + copy are deterministic so the on-camera flow is fast
- * and reliable — it does NOT depend on the LLM transcribing/interpreting the audio.
+ * Scripted demo mode for recorded walkthroughs. This must stay opt-in because the flow signs and
+ * broadcasts a real Ledger transfer to the fixed demo wallet.
  */
 object Demo {
     /** Turn the scripted voice → transfer flow on/off. */
-    const val ENABLED = true
+    const val ENABLED = false
 
     /** The agent wallet the demo transfer funds (same account used in the live test). */
     const val AGENT_WALLET = "7duZYJ9DzLnWFbo7NRCkGV4npMYWydRdN9S4T7TSd4NK"
@@ -20,9 +18,9 @@ object Demo {
     /** What the recorded voice message "says" (shown as its transcript caption). */
     const val VOICE_TRANSCRIPT = "Send 0.05 SOL to my agent wallet"
 
-    /** The agent's reply after the transfer confirms on the Flex + broadcasts. */
+    /** The scripted reply after physical approval and RPC submission (not chain confirmation). */
     const val SUCCESS_REPLY =
-        "The transfer for your agent was sent successfully to your agent. Want something else?"
+        "The transfer was submitted to Solana and is awaiting confirmation. Want something else?"
 
     /** Beat (ms) between the voice message and the Ledger flow opening — reads as the agent thinking. */
     const val THINK_DELAY_MS = 1400L

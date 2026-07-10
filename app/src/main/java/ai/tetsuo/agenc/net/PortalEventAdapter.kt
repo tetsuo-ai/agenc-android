@@ -1,11 +1,16 @@
 package ai.tetsuo.agenc.net
 
+import ai.tetsuo.agenc.ledger.Base58
 import ai.tetsuo.agenc.model.EventMsg
 import ai.tetsuo.agenc.model.FileMutation
+import ai.tetsuo.agenc.model.LedgerSolanaTransferClientAction
+import ai.tetsuo.agenc.model.LedgerTransferReceipt
+import ai.tetsuo.agenc.model.LedgerTransferResult
 import ai.tetsuo.agenc.model.PendingElicitation
 import ai.tetsuo.agenc.model.PendingPermission
 import ai.tetsuo.agenc.model.QuestionOption
 import ai.tetsuo.agenc.model.ToolKind
+import java.time.Instant
 import java.util.UUID
 
 /**
@@ -46,7 +51,7 @@ object PortalEventAdapter {
                 )
             }
 
-            "event.permission_request" -> Mapped(sid, permission(p))
+            "event.permission_request" -> permission(p)?.let { Mapped(sid, it) }
 
             "event.session_event" -> {
                 val ev = p["event"] ?: return null
@@ -56,23 +61,34 @@ object PortalEventAdapter {
 
             "event.user_input_request" -> {
                 // The agent is asking the user a question — surface it so the turn doesn't stall.
-                val q = p["questions"]?.arrayValue?.firstOrNull() ?: return null
-                val opts = (q["options"]?.arrayValue ?: emptyList()).mapNotNull { o ->
+                // A Ledger clientAction is authoritative and may intentionally have no display
+                // question. Never derive transfer authority from the human-readable question text.
+                val actionValue = p["clientAction"]
+                val action = parseLedgerClientAction(actionValue)
+                // Presence is authoritative: a malformed/expired privileged action must never
+                // degrade into the generic answer sheet carried alongside it.
+                if (actionValue != null && action == null) return null
+                val q = p["questions"]?.arrayValue?.firstOrNull()
+                if (q == null && action == null) return null
+                val opts = (q?.get("options")?.arrayValue ?: emptyList()).mapNotNull { o ->
                     val label = o["label"]?.stringValue ?: return@mapNotNull null
                     // options carry no id; the label IS the value
                     QuestionOption(id = label, label = label)
                 }
+                val requestId = p["requestId"]?.stringValue ?: return null
                 Mapped(
                     sid,
                     EventMsg.RequestUserInput(
                         PendingElicitation(
-                            id = p["requestId"]?.stringValue ?: UUID.randomUUID().toString(),
-                            questionId = q["id"]?.stringValue ?: "q",
-                            question = q["question"]?.stringValue
-                                ?: q["header"]?.stringValue
+                            id = requestId,
+                            questionId = q?.get("id")?.stringValue
+                                ?: if (action != null) "ledger_transfer" else "q",
+                            question = q?.get("question")?.stringValue
+                                ?: q?.get("header")?.stringValue
                                 ?: "The agent needs your input",
                             options = opts,
-                            allowsOther = q["isOther"]?.boolValue ?: true,
+                            allowsOther = q?.get("isOther")?.boolValue ?: (action == null),
+                            clientAction = action,
                         ),
                     ),
                 )
@@ -81,6 +97,59 @@ object PortalEventAdapter {
             // event.agent_status handled in DaemonHub; voice/unknown elsewhere
             else -> null
         }
+    }
+
+    /**
+     * Fail-closed parser for Core's privileged mobile Ledger action. A forged generic question,
+     * malformed amount/address, wrong network/source/capability, or expired request returns null.
+     */
+    internal fun parseLedgerClientAction(
+        value: JsonValue?,
+        nowEpochMillis: Long = System.currentTimeMillis(),
+    ): LedgerSolanaTransferClientAction? {
+        val action = value as? JsonValue.Obj ?: return null
+        if (action["type"]?.stringValue != LEDGER_ACTION_TYPE ||
+            action["source"]?.stringValue != LEDGER_ACTION_SOURCE ||
+            action["targetCapability"]?.stringValue != LEDGER_CAPABILITY ||
+            action["network"]?.stringValue != LEDGER_NETWORK
+        ) {
+            return null
+        }
+        val intentId = action["intentId"]?.stringValue
+            ?.takeIf {
+                it.startsWith("ledger_") &&
+                    it.length in 15..200 &&
+                    SAFE_LEDGER_ID.matches(it)
+            }
+            ?: return null
+        val responseNonce = action["responseNonce"]?.stringValue
+            ?.takeIf(LedgerTransferReceipt::isValidResponseNonce)
+            ?: return null
+        val to = action["to"]?.stringValue ?: return null
+        if (to.length !in 32..44 ||
+            !runCatching { Base58.decode(to).size == 32 }.getOrDefault(false)
+        ) {
+            return null
+        }
+        val lamportsText = action["lamports"]?.stringValue ?: return null
+        if (!POSITIVE_CANONICAL_INTEGER.matches(lamportsText)) return null
+        val lamports = lamportsText.toLongOrNull()?.takeIf { it > 0 } ?: return null
+        val note = action["note"]?.stringValue?.takeIf { it.length <= 240 }
+        if (action["note"] != null && note == null) return null
+        val expiresAt = action["expiresAt"]?.stringValue
+            ?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
+            ?: return null
+        if (expiresAt <= nowEpochMillis || expiresAt - nowEpochMillis > MAX_LEDGER_TTL_MS) {
+            return null
+        }
+        return LedgerSolanaTransferClientAction(
+            intentId = intentId,
+            responseNonce = responseNonce,
+            to = to,
+            lamports = lamports,
+            note = note,
+            expiresAtEpochMillis = expiresAt,
+        )
     }
 
     private fun mapInner(type: String, ev: JsonValue): EventMsg? {
@@ -131,13 +200,17 @@ object PortalEventAdapter {
                 )
             }
 
-            "tool_call_completed" ->
+            "tool_call_completed" -> {
+                val result = p["result"]?.stringValue ?: p["output"]?.stringValue ?: ""
+                val isError = p["isError"]?.boolValue ?: false
                 EventMsg.ToolCallCompleted(
                     callId = callId(p),
-                    result = p["result"]?.stringValue ?: p["output"]?.stringValue ?: "",
-                    isError = p["isError"]?.boolValue ?: false,
+                    result = result,
+                    isError = isError,
                     diff = fileMutation(p["diff"]),
+                    ledgerResult = if (isError) null else LedgerTransferResult.parse(result),
                 )
+            }
 
             "interrupt" ->
                 EventMsg.TurnAborted(reason = p["reason"]?.stringValue ?: "interrupted")
@@ -158,11 +231,12 @@ object PortalEventAdapter {
         }
     }
 
-    private fun permission(v: JsonValue): EventMsg {
+    private fun permission(v: JsonValue): EventMsg? {
         val name = v["toolName"]?.stringValue ?: "tool"
+        val requestId = v["requestId"]?.stringValue ?: return null
         return EventMsg.RequestPermissions(
             PendingPermission(
-                id = v["requestId"]?.stringValue ?: UUID.randomUUID().toString(),
+                id = requestId,
                 toolName = name,
                 title = "Allow $name?",
                 detail = v["reason"]?.stringValue ?: "",
@@ -179,6 +253,14 @@ object PortalEventAdapter {
             ?: ev["requestId"]?.stringValue
             ?: ev["id"]?.stringValue
             ?: ""
+
+    private const val LEDGER_ACTION_TYPE = "ledger_solana_transfer_v1"
+    private const val LEDGER_ACTION_SOURCE = "agenc-core"
+    private const val LEDGER_CAPABILITY = "portal.ledger.solana.sign.v1"
+    private const val LEDGER_NETWORK = "mainnet-beta"
+    private const val MAX_LEDGER_TTL_MS = 15 * 60 * 1_000L
+    private val SAFE_LEDGER_ID = Regex("[A-Za-z0-9_-]+")
+    private val POSITIVE_CANONICAL_INTEGER = Regex("[1-9][0-9]*")
 
     private fun toolKind(raw: String?): ToolKind = ToolKind.from(raw)
 
