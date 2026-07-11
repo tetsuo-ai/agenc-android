@@ -36,9 +36,12 @@ visual work.
 - Swiping a session exposes delete/archive. Android calls Core first, shows a
   confirmation/failure path, and removes local state only after success.
 - Session rows expose lifecycle and mute state without bright card chrome.
-- Account keeps identity, connection, notifications, behavior, security, and
-  Ledger as distinct functional sections. Switches/sliders/actions use semantic
-  haptic cues.
+- Account starts with `01 AgenC account` (photo slot, display name only, and Free
+  plan; never email or unavailable helper copy), followed immediately by `02 Connected Core` (machine, connection,
+  linked/not-logged-in/mismatch state, and Refresh). Notifications, Delivery,
+  Hardware wallet, and Security remain distinct numbered sections.
+- Core identity never overwrites the hosted account card. Switches, adjusters,
+  Refresh, and actions use semantic haptic cues without generic decorative icons.
 
 ## Bottom navigation
 

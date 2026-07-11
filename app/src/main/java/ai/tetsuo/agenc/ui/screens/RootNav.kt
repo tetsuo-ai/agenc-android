@@ -41,16 +41,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ai.tetsuo.agenc.model.AccountUiState
+import ai.tetsuo.agenc.model.CoreAccountLinkState
 import ai.tetsuo.agenc.model.Identity
 import ai.tetsuo.agenc.model.SessionLifecycle
 import ai.tetsuo.agenc.model.SessionSummary
-import ai.tetsuo.agenc.model.Tier
 import ai.tetsuo.agenc.ui.AgenCTheme
 import ai.tetsuo.agenc.ui.HapticCue
 import ai.tetsuo.agenc.ui.rememberAgenCHaptics
 
-/** The three top-level destinations: passwordless login → pair a computer → the main app. */
-enum class AppRoute { Login, Pairing, Main }
+/** Welcome locally, authenticate+pair from a CLI code, then enter the main app. */
+enum class AppRoute { Welcome, Pairing, Main }
 
 /** Within [AppRoute.Main], which destination the bottom navigation is showing. */
 enum class MainTab { Home, Sessions, Account }
@@ -61,16 +62,10 @@ enum class ConnectionStatus { Connected, Connecting, Offline }
 /**
  * The top-level switch — the Android port of the iOS `RootView` swap logic.
  *
- * The Login and Pairing routes are fully stateless. The Main route renders the host-owned [mainTab]
- * so the selected destination survives temporary Chat and Ledger overlays.
+ * The Pairing route is fully stateless. The Main route renders the host-owned [mainTab] so the
+ * selected destination survives temporary Chat and Ledger overlays.
  *
  * Auth/pairing state:
- * @param deviceCode device-flow code for [LoginScreen] (null until issued).
- * @param isLoading login-in-flight flag for [LoginScreen].
- * @param loginError error for [LoginScreen].
- * @param onStartLogin Sign-in tap on [LoginScreen]; carries the optional identifier (null here).
- * @param onCancelLogin cancels the active device-flow poll.
- *
  * @param machineName linked computer name for [PairingScreen] (null until linked).
  * @param isLinking claim-in-flight flag for [PairingScreen].
  * @param pairingError error for [PairingScreen].
@@ -84,18 +79,14 @@ enum class ConnectionStatus { Connected, Connecting, Offline }
  * @param onOpenSession row tap.
  * @param onNewChat compose action.
  * @param onMainTabChange updates the single host-owned tab state.
- * @param identity the account identity for [AccountScreen].
+ * @param account canonical hosted account plus its fail-closed Core link state.
  * @param onLogout logout tap on [AccountScreen].
  */
 @Composable
 fun RootNav(
     route: AppRoute,
-    // Login
-    deviceCode: DeviceCodeUi?,
-    isLoading: Boolean,
-    loginError: String?,
-    onStartLogin: (identifier: String?) -> Unit,
-    onCancelLogin: () -> Unit = {},
+    // Welcome (local navigation only; no auth request)
+    onWelcomeContinue: () -> Unit,
     // Pairing
     machineName: String?,
     isLinking: Boolean,
@@ -112,7 +103,8 @@ fun RootNav(
     onOpenSession: (SessionSummary) -> Unit,
     onNewChat: () -> Unit,
     onMainTabChange: (MainTab) -> Unit,
-    identity: Identity?,
+    account: AccountUiState?,
+    onRefreshAccount: () -> Unit = {},
     onLogout: () -> Unit,
     mutedSessions: Set<String> = emptySet(),
     onToggleMute: (String) -> Unit = {},
@@ -120,13 +112,7 @@ fun RootNav(
     onOpenLedger: (() -> Unit)? = null,
 ) {
     when (route) {
-        AppRoute.Login -> LoginScreen(
-            deviceCode = deviceCode,
-            isLoading = isLoading,
-            error = loginError,
-            onStart = onStartLogin,
-            onCancel = onCancelLogin,
-        )
+        AppRoute.Welcome -> WelcomeScreen(onContinue = onWelcomeContinue)
 
         AppRoute.Pairing -> PairingScreen(
             machineName = machineName,
@@ -146,7 +132,9 @@ fun RootNav(
             onSessionsQueryChange = onSessionsQueryChange,
             onOpenSession = onOpenSession,
             onNewChat = onNewChat,
-            identity = identity,
+            account = account,
+            machineName = machineName,
+            onRefreshAccount = onRefreshAccount,
             onLogout = onLogout,
             mutedSessions = mutedSessions,
             onToggleMute = onToggleMute,
@@ -169,7 +157,9 @@ private fun MainShell(
     onSessionsQueryChange: (String) -> Unit,
     onOpenSession: (SessionSummary) -> Unit,
     onNewChat: () -> Unit,
-    identity: Identity?,
+    account: AccountUiState?,
+    machineName: String?,
+    onRefreshAccount: () -> Unit,
     onLogout: () -> Unit,
     mutedSessions: Set<String>,
     onToggleMute: (String) -> Unit,
@@ -222,7 +212,10 @@ private fun MainShell(
                         )
 
                         MainTab.Account -> AccountScreen(
-                            identity = identity,
+                            account = account,
+                            machineName = machineName,
+                            connectionStatus = connectionStatus,
+                            onRefreshAccount = onRefreshAccount,
                             onLogout = onLogout,
                             onOpenLedger = onOpenLedger,
                         )
@@ -358,42 +351,13 @@ private fun TabItem(
     }
 }
 
-@Preview(name = "RootNav — Login", showBackground = true, backgroundColor = 0xFF101116)
-@Composable
-private fun RootNavLoginPreview() {
-    AgenCTheme {
-        RootNav(
-            route = AppRoute.Login,
-            deviceCode = null,
-            isLoading = false,
-            loginError = null,
-            onStartLogin = {},
-            machineName = null,
-            isLinking = false,
-            pairingError = null,
-            onClaimCode = {},
-            onScanQr = {},
-            mainTab = MainTab.Sessions,
-            sessions = emptyList(),
-            onOpenSession = {},
-            onNewChat = {},
-            onMainTabChange = {},
-            identity = null,
-            onLogout = {},
-        )
-    }
-}
-
 @Preview(name = "RootNav — Pairing", showBackground = true, backgroundColor = 0xFF101116)
 @Composable
 private fun RootNavPairingPreview() {
     AgenCTheme {
         RootNav(
             route = AppRoute.Pairing,
-            deviceCode = null,
-            isLoading = false,
-            loginError = null,
-            onStartLogin = {},
+            onWelcomeContinue = {},
             machineName = null,
             isLinking = false,
             pairingError = null,
@@ -404,7 +368,7 @@ private fun RootNavPairingPreview() {
             onOpenSession = {},
             onNewChat = {},
             onMainTabChange = {},
-            identity = null,
+            account = null,
             onLogout = {},
         )
     }
@@ -416,10 +380,7 @@ private fun RootNavMainPreview() {
     AgenCTheme {
         RootNav(
             route = AppRoute.Main,
-            deviceCode = null,
-            isLoading = false,
-            loginError = null,
-            onStartLogin = {},
+            onWelcomeContinue = {},
             machineName = "Pavel's MacBook Pro",
             isLinking = false,
             pairingError = null,
@@ -430,7 +391,7 @@ private fun RootNavMainPreview() {
             onOpenSession = {},
             onNewChat = {},
             onMainTabChange = {},
-            identity = Identity(displayName = "Pavel C.", handle = "@pavel", tier = Tier.pro),
+            account = previewAccount(),
             onLogout = {},
         )
     }
@@ -442,10 +403,7 @@ private fun RootNavHomePreview() {
     AgenCTheme {
         RootNav(
             route = AppRoute.Main,
-            deviceCode = null,
-            isLoading = false,
-            loginError = null,
-            onStartLogin = {},
+            onWelcomeContinue = {},
             machineName = "Pavel's MacBook Pro",
             isLinking = false,
             pairingError = null,
@@ -465,8 +423,20 @@ private fun RootNavHomePreview() {
             onOpenSession = {},
             onNewChat = {},
             onMainTabChange = {},
-            identity = Identity(displayName = "Pavel C.", handle = "@pavel", tier = Tier.pro),
+            account = previewAccount(),
             onLogout = {},
         )
     }
+}
+
+private fun previewAccount(): AccountUiState {
+    val identity = Identity(
+        displayName = "Pavel C.",
+        email = "pavel@agenc.tech",
+        accountId = "acct-preview",
+    )
+    return AccountUiState(
+        phone = identity,
+        core = CoreAccountLinkState.Linked(identity),
+    )
 }

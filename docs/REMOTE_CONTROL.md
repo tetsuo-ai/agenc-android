@@ -137,16 +137,31 @@ reconciliation rules; see [Ledger Flex](LEDGER_FLEX.md).
 
 ## Account identity linking
 
-The phone account bearer and the Core `/login` identity are related but
-separate authentication facts. Android computes one display snapshot:
+The hosted Android login and the Core `/login` identity are related but
+separate authentication facts. The hosted profile is canonical for the `01
+AgenC account` card. Android refreshes it from `POST /v1/auth/me` after restore,
+after login, and on manual refresh. A network error or an older backend without
+that endpoint keeps the usable cached profile; a 401/403 expires the local bearer
+without rebinding the saved Core/Ledger pairing namespace.
+
+The current product plan is always shown as **Free**. Android ignores paid tier
+strings from old/future backend or Core payloads until those products exist.
+Core never replaces the hosted display name or account id. Email may be retained
+internally for legacy account matching, but Account never renders it. The profile
+card reserves a photo slot and uses initials until the backend exposes an avatar.
+
+`02 Connected Core` reconciles Core separately:
 
 1. If both sides expose stable account ids, those ids must match.
-2. During migration from older phone builds, an exact normalized email/handle
-   match may link records that lack an id.
-3. Conflicting stable ids create a visible runtime mismatch. Android never
-   replaces the phone account with the Core record.
-4. Core's plan/tier is used only when the runtime marks it verified; otherwise
-   the phone's authenticated tier remains authoritative.
+2. During migration, an exact normalized email match may link records where
+   one side lacks an id. Exact handles are a last fallback only when both sides
+   supplied handles and neither supplied email.
+3. Conflicting identities create a visible `ACCOUNT MISMATCH`.
+4. `NOT LOGGED IN` is used only when connected Core authoritatively reports
+   `authenticated:false`. Checking, offline, failed/unavailable, and
+   authenticated-but-unverifiable states remain distinct.
+5. Refresh rereads both `/v1/auth/me` and Core `auth.whoami`. Login/logout of
+   Core remains a deliberate `/login` or `/logout` action in the Core TUI.
 
 Logout clears the phone session and old-host unsigned work only after Ledger
 host-exit safety checks pass. It never logs the user out of Core implicitly.
