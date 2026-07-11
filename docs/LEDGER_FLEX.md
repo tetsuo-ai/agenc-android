@@ -205,10 +205,10 @@ threat review.
 
 ## Release safety
 
-`Demo.ENABLED` must remain `false`. The opt-in demo script contains a fixed
-public recipient and, when enabled, signs and broadcasts a real mainnet SOL
-transfer. It is for controlled recorded walkthroughs only and must never be
-enabled in a production/debug artifact distributed to testers.
+`Demo.ENABLED` must remain `false`. The checked-in demo destination is empty and its amount is
+zero, so the public source is inert. A controlled recorded walkthrough requires a developer to
+supply private local values and enable the script without committing either change. It must never
+be enabled in an artifact distributed to testers or users.
 
 No routine automated test sends a transaction. A safe hardware rehearsal is:
 receive a real typed request, review it on the Flex, reject on-device, verify a

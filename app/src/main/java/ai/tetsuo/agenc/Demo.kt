@@ -1,22 +1,21 @@
 package ai.tetsuo.agenc
 
 /**
- * Scripted demo mode for recorded walkthroughs. This must stay opt-in because the flow signs and
- * broadcasts a real Ledger transfer to the fixed demo wallet.
+ * Scripted demo mode for local walkthroughs. Public builds keep this disabled and intentionally do
+ * not contain a live destination or a non-zero transfer amount.
  */
 object Demo {
     /** Turn the scripted voice → transfer flow on/off. */
     const val ENABLED = false
 
-    /** The agent wallet the demo transfer funds (same account used in the live test). */
-    const val AGENT_WALLET = "7duZYJ9DzLnWFbo7NRCkGV4npMYWydRdN9S4T7TSd4NK"
+    /** Intentionally unset. A developer must supply a destination in a private local build. */
+    const val AGENT_WALLET = ""
 
-    /** 0.05 SOL in lamports. */
-    const val AMOUNT_LAMPORTS = 50_000_000L
-    const val AMOUNT_SOL = 0.05
+    const val AMOUNT_LAMPORTS = 0L
+    const val AMOUNT_SOL = 0.0
 
     /** What the recorded voice message "says" (shown as its transcript caption). */
-    const val VOICE_TRANSCRIPT = "Send 0.05 SOL to my agent wallet"
+    const val VOICE_TRANSCRIPT = "Review a transfer to my agent wallet"
 
     /** The scripted reply after physical approval and RPC submission (not chain confirmation). */
     const val SUCCESS_REPLY =

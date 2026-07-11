@@ -170,7 +170,7 @@ class NotificationCoordinator(private val context: Context) {
             val status = deliveryStatus()
             Log.w(
                 LOG_TAG,
-                "Delivery blocked kind=$kind session=$sessionId " +
+                "Delivery blocked kind=$kind " +
                     "runtime=${status.runtimePermissionGranted} app=${status.appEnabled} " +
                     "attentionChannel=${status.attentionChannelEnabled} " +
                     "doneChannel=${status.turnDoneChannelEnabled}",
@@ -193,10 +193,10 @@ class NotificationCoordinator(private val context: Context) {
                         .add(notificationKey)
                     sessionsNeedingAttention.add(sessionId)
                 }
-                Log.i(LOG_TAG, "Posted kind=$kind session=$sessionId")
+                Log.i(LOG_TAG, "Posted kind=$kind")
                 true
             } catch (error: RuntimeException) {
-                Log.w(LOG_TAG, "Post failed kind=$kind session=$sessionId", error)
+                Log.w(LOG_TAG, "Post failed kind=$kind", error)
                 false
             }
         }

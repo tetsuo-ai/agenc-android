@@ -204,8 +204,8 @@ private fun EmptyHomeMessage(text: String) {
 }
 
 private fun homeSamples(): List<SessionSummary> = listOf(
-    SessionSummary("sess-1", "Refactor auth flow", SessionLifecycle.Running, "/Users/pavel/agenc-core", "Wiring login", "now"),
-    SessionSummary("sess-2", "Port Android shell", SessionLifecycle.AwaitingPermission, "/Users/pavel/agenc-android", "Needs approval", "2m"),
+    SessionSummary("sess-1", "Refactor auth flow", SessionLifecycle.Running, "~/agenc-core", "Wiring login", "now"),
+    SessionSummary("sess-2", "Port Android shell", SessionLifecycle.AwaitingPermission, "~/agenc-android", "Needs approval", "2m"),
 )
 
 @Preview(name = "Home / dark", showBackground = true, backgroundColor = 0xFF000000)

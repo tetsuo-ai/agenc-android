@@ -420,7 +420,7 @@ private fun PairingScreenErrorPreview() {
 private fun PairingScreenLinkedPreview() {
     AgenCTheme {
         PairingScreen(
-            machineName = "Pavel's MacBook Pro",
+            machineName = "Workstation",
             isLinking = false,
             error = null,
             onClaimCode = {},

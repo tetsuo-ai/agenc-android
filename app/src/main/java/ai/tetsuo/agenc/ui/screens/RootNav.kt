@@ -381,7 +381,7 @@ private fun RootNavMainPreview() {
         RootNav(
             route = AppRoute.Main,
             onWelcomeContinue = {},
-            machineName = "Pavel's MacBook Pro",
+            machineName = "Workstation",
             isLinking = false,
             pairingError = null,
             onClaimCode = {},
@@ -404,7 +404,7 @@ private fun RootNavHomePreview() {
         RootNav(
             route = AppRoute.Main,
             onWelcomeContinue = {},
-            machineName = "Pavel's MacBook Pro",
+            machineName = "Workstation",
             isLinking = false,
             pairingError = null,
             onClaimCode = {},
@@ -415,7 +415,7 @@ private fun RootNavHomePreview() {
                     id = "sess-1",
                     title = "Refactor auth flow",
                     lifecycle = SessionLifecycle.Running,
-                    cwd = "/Users/pavel/agenc-core",
+                    cwd = "~/agenc-core",
                     subtitle = "wiring login",
                     updated = "now",
                 ),
@@ -431,8 +431,8 @@ private fun RootNavHomePreview() {
 
 private fun previewAccount(): AccountUiState {
     val identity = Identity(
-        displayName = "Pavel C.",
-        email = "pavel@agenc.tech",
+        displayName = "AgenC User",
+        email = "user@example.invalid",
         accountId = "acct-preview",
     )
     return AccountUiState(
