@@ -9,7 +9,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -19,9 +18,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 /**
  * Direct port of the iOS app's BackendAPIClient.swift.
  *
- * REST client for the hosted backend (OAuth 2.0 device authorization grant + pairing), talking to
- * the SAME backend the iOS app uses ([AppConfig.BACKEND_BASE]). All endpoints POST JSON; Bearer
- * auth where noted. Suspending functions run the blocking OkHttp call on [Dispatchers.IO].
+ * REST client for the hosted backend. Android authenticates by redeeming the one-time pairing code
+ * created by the already-authenticated Core CLI; it never starts its own browser/OAuth login.
+ * All endpoints POST JSON; Bearer auth where noted. Suspending functions run the blocking OkHttp
+ * call on [Dispatchers.IO].
  */
 class BackendApiClient(
     private val baseUrl: String = AppConfig.BACKEND_BASE,
@@ -33,15 +33,6 @@ class BackendApiClient(
     // MARK: - DTOs (mirror the Swift Decodable structs)
 
     @Serializable
-    data class DeviceCodePrompt(
-        val deviceCode: String,
-        val userCode: String? = null,
-        val verificationUri: String? = null,
-        val intervalSeconds: Int? = null,
-        val expiresInSeconds: Int? = null,
-    )
-
-    @Serializable
     data class AuthIdentityDTO(
         val accountId: String? = null,
         val displayName: String? = null,
@@ -49,12 +40,18 @@ class BackendApiClient(
         val email: String? = null,
     )
 
+    /** Canonical hosted account profile. `/v1/auth/me` intentionally exposes no handle field. */
     @Serializable
-    data class LoginSuccess(
-        val token: String,
-        val identity: AuthIdentityDTO,
-        val subscriptionTier: String,
-        val expiresAt: String? = null,
+    data class CanonicalIdentityDTO(
+        val accountId: String,
+        val displayName: String? = null,
+        val email: String? = null,
+    )
+
+    @Serializable
+    data class AuthProfileDTO(
+        val identity: CanonicalIdentityDTO,
+        val subscriptionTier: String = "free",
     )
 
     @Serializable
@@ -74,48 +71,54 @@ class BackendApiClient(
         val expiresAt: String? = null,
     )
 
+    /** Account session inherited from the authenticated CLI that created the pairing code. */
+    @Serializable
+    data class PairingAuthDTO(
+        val token: String,
+        val identity: AuthIdentityDTO,
+        val subscriptionTier: String = "free",
+        val expiresAt: String? = null,
+    )
+
+    /** Atomic pairing claim: account session + relay-room credential arrive in one response. */
+    @Serializable
+    data class PairClaimDTO(
+        val pairingId: String,
+        val machineName: String? = null,
+        val clientTicket: String,
+        val relayUrl: String? = null,
+        val expiresAt: String? = null,
+        val auth: PairingAuthDTO? = null,
+    )
+
     /** A pairing failure with a human-readable reason (e.g. wrong/expired code). */
     class PairingException(message: String) : Exception(message)
 
     /** Auth failure (non-200 on a Bearer-protected endpoint). */
     class AuthException(message: String = "authentication required") : Exception(message)
 
-    /** Device-flow poll outcome (mirrors the Swift PollOutcome enum). */
-    sealed interface PollOutcome {
-        data class Pending(val intervalSeconds: Int?) : PollOutcome
-        data class SlowDown(val intervalSeconds: Int?) : PollOutcome
-        data class Success(val body: LoginSuccess) : PollOutcome
-        data class Terminal(val reason: String) : PollOutcome
-    }
+    /** The bearer is no longer valid; callers must not continue as an authenticated account. */
+    class UnauthorizedException : Exception("authentication expired")
 
     // MARK: - Endpoints
-
-    suspend fun loginStart(identifier: String?): DeviceCodePrompt {
-        val body = if (identifier != null) mapOf("identifier" to identifier) else emptyMap()
-        val (data, _) = post(AppConfig.Path.LOGIN_START, body)
-        return json.decodeFromString(DeviceCodePrompt.serializer(), data)
-    }
-
-    suspend fun loginPoll(deviceCode: String): PollOutcome {
-        val (data, status) = post(AppConfig.Path.LOGIN_POLL, mapOf("deviceCode" to deviceCode))
-        if (status == 200) {
-            runCatching { json.decodeFromString(LoginSuccess.serializer(), data) }
-                .getOrNull()?.let { return PollOutcome.Success(it) }
-        }
-        val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull()
-        return when (val statusField = obj?.get("status")?.let { (it as? JsonPrimitive)?.contentOrNull }) {
-            "pending" -> PollOutcome.Pending(obj.intervalSeconds())
-            "slow_down" -> PollOutcome.SlowDown(obj.intervalSeconds())
-            null -> PollOutcome.Terminal("error")
-            else -> PollOutcome.Terminal(statusField)
-        }
-    }
 
     suspend fun logout(token: String) {
         val (_, status) = post(AppConfig.Path.LOGOUT, emptyMap(), token)
         if (status !in 200..299) {
             throw AuthException("Remote logout failed (error $status).")
         }
+    }
+
+    /** Fetch the canonical hosted profile after restore/login without trusting stale login copy. */
+    suspend fun fetchProfile(token: String): AuthProfileDTO {
+        val (data, status) = post(AppConfig.Path.AUTH_ME, emptyMap(), token)
+        if (status == 401 || status == 403) throw UnauthorizedException()
+        if (status != 200) throw AuthException("Profile refresh failed (error $status).")
+        val profile = json.decodeFromString(AuthProfileDTO.serializer(), data)
+        if (profile.identity.accountId.isBlank()) {
+            throw AuthException("Profile refresh returned an invalid account id.")
+        }
+        return profile
     }
 
     /**
@@ -129,17 +132,30 @@ class BackendApiClient(
     }
 
     /**
-     * Redeem a pairing code shown on a computer (`agenc remote on`). Bearer-authenticated; returns
-     * the pairing's client ticket so the app can dial that host's isolated relay room.
+     * Redeem the one-time code shown by `agenc remote on`. The code is the phone's only onboarding
+     * credential: the backend binds it to the account that authenticated `/v1/pair/start`, then
+     * returns that account session together with the pairing's relay ticket.
      */
-    suspend fun pairClaim(code: String, appLabel: String, token: String): PairingDTO {
+    suspend fun pairClaim(
+        code: String,
+        appLabel: String,
+        legacyToken: String? = null,
+    ): PairClaimDTO {
         val (data, status) = post(
             AppConfig.Path.PAIR_CLAIM,
             mapOf("code" to code, "appLabel" to appLabel),
-            token,
+            legacyToken,
         )
         if (status != 200) throw pairingError(data, status)
-        return json.decodeFromString(PairingDTO.serializer(), data)
+        val claim = runCatching { json.decodeFromString(PairClaimDTO.serializer(), data) }
+            .getOrElse { throw PairingException("The pairing service returned an invalid response.") }
+        val inheritedAuthIsInvalid = claim.auth?.let {
+            it.token.isBlank() || it.identity.accountId.isNullOrBlank()
+        } ?: legacyToken.isNullOrBlank()
+        if (claim.pairingId.isBlank() || claim.clientTicket.isBlank() || inheritedAuthIsInvalid) {
+            throw PairingException("The pairing service returned an invalid response.")
+        }
+        return claim
     }
 
     /** Re-mint the pairing's short-lived client ticket on (re)connect — no re-pairing. */
@@ -169,9 +185,6 @@ class BackendApiClient(
     }
 
     // MARK: - helpers
-
-    private fun JsonObject.intervalSeconds(): Int? =
-        (this["intervalSeconds"] as? JsonPrimitive)?.intOrNull
 
     private fun pairingError(data: String, status: Int): PairingException {
         val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull()

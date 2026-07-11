@@ -36,11 +36,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -49,6 +51,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
@@ -86,12 +91,13 @@ fun PairingScreen(
 ) {
     val haptics = rememberAgenCHaptics()
     var code by rememberSaveable { mutableStateOf("") }
-    var showScanner by rememberSaveable { mutableStateOf(false) }
+    // A camera overlay is transient UI. Never resurrect it after a cold restart or task restore.
+    var showScanner by remember { mutableStateOf(false) }
     LaunchedEffect(initialCode) {
         val prefill = initialCode?.let(::normalizePairCode)
-        if (prefill?.length == 8) code = formatPairCode(prefill)
+        if (prefill?.length == 8) code = prefill
     }
-    val normalized = normalizePairCode(code)
+    val normalized = code
     val canLink = normalized.length == 8 && !isLinking && machineName == null
 
     BoxWithConstraints(
@@ -176,7 +182,9 @@ fun PairingScreen(
                 )
                 OutlinedTextField(
                     value = code,
-                    onValueChange = { code = formatPairCode(it) },
+                    // Keep the editable value separator-free. Inserting '-' into the actual value
+                    // on every keystroke resets the IME selection and can reorder fast input.
+                    onValueChange = { code = normalizePairCode(it).take(8) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(62.dp),
@@ -210,6 +218,7 @@ fun PairingScreen(
                     keyboardActions = KeyboardActions(
                         onDone = { if (canLink) onClaimCode(normalized) },
                     ),
+                    visualTransformation = PairCodeVisualTransformation,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Onboarding.ink,
                         unfocusedTextColor = Onboarding.ink,
@@ -336,10 +345,32 @@ private fun PairErrorLabel(error: String) {
 internal fun normalizePairCode(raw: String): String =
     raw.uppercase().filter { it.isLetterOrDigit() }
 
-/** Human-friendly XXXX-XXXX presentation while keeping the backend payload separator-free. */
-private fun formatPairCode(raw: String): String {
-    val normalized = normalizePairCode(raw).take(8)
-    return if (normalized.length > 4) normalized.take(4) + "-" + normalized.drop(4) else normalized
+/** Human-friendly XXXX-XXXX presentation without mutating the IME's separator-free value. */
+internal object PairCodeVisualTransformation : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val raw = text.text.take(8)
+        val formatted = if (raw.length > 4) {
+            raw.take(4) + "-" + raw.drop(4)
+        } else {
+            raw
+        }
+        val mapping = object : OffsetMapping {
+            override fun originalToTransformed(offset: Int): Int {
+                val safe = offset.coerceIn(0, raw.length)
+                return if (raw.length > 4 && safe > 4) safe + 1 else safe
+            }
+
+            override fun transformedToOriginal(offset: Int): Int {
+                val safe = offset.coerceIn(0, formatted.length)
+                return if (raw.length > 4 && safe > 4) {
+                    (safe - 1).coerceAtMost(raw.length)
+                } else {
+                    safe.coerceAtMost(raw.length)
+                }
+            }
+        }
+        return TransformedText(AnnotatedString(formatted), mapping)
+    }
 }
 
 @Preview(name = "Pairing — empty", showBackground = true, backgroundColor = 0xFF101116)

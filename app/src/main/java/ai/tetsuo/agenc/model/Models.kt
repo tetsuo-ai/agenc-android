@@ -232,10 +232,6 @@ data class TokenUsage(
 
 // MARK: - Summaries (session.list / agent.list projections)
 
-enum class Tier { free, pro, team, enterprise;
-    val label: String get() = name.replaceFirstChar { it.uppercase() }
-}
-
 data class SessionSummary(
     val id: String,
     var title: String,
@@ -263,16 +259,46 @@ data class Host(
     val online: Boolean,
 )
 
+/** Canonical account identity. Android never derives a handle from display name or email. */
 data class Identity(
-    var displayName: String,
-    var handle: String,
-    var tier: Tier,
-    /** Stable account owner used to verify that phone auth and Core `/login` are the same person. */
-    var accountId: String? = null,
-    /** False when Core confirms the person but does not expose subscription data. */
-    var tierVerified: Boolean = true,
-    /** True only after the runtime identity matches the phone identity by account id or email. */
-    var runtimeLinked: Boolean = false,
-    /** A connected runtime reported a different stable account id. */
-    var runtimeMismatch: Boolean = false,
+    val displayName: String,
+    val email: String,
+    val accountId: String? = null,
+    /** Optional exact handle supplied by Core; the hosted Android account profile has no handle. */
+    val handle: String? = null,
+)
+
+/** Live authentication state reported by the connected Core's `auth.whoami`. */
+sealed interface CoreAccountState {
+    /** A Core socket exists and its first identity read has not completed yet. */
+    data object Checking : CoreAccountState
+
+    /** The paired Core socket is not currently connected. */
+    data object Offline : CoreAccountState
+
+    /** Core is connected, but the identity read failed or returned an invalid shape. */
+    data object Unavailable : CoreAccountState
+
+    /** Core answered authoritatively that no AgenC account is logged in. */
+    data object NotLoggedIn : CoreAccountState
+
+    /** Core is logged in; identity can still be absent on an older or incomplete auth backend. */
+    data class Authenticated(val identity: Identity?) : CoreAccountState
+}
+
+/** Fail-closed reconciliation of the canonical Android account with [CoreAccountState]. */
+sealed interface CoreAccountLinkState {
+    data object Checking : CoreAccountLinkState
+    data object Offline : CoreAccountLinkState
+    data object Unavailable : CoreAccountLinkState
+    data object NotLoggedIn : CoreAccountLinkState
+    data class Linked(val core: Identity) : CoreAccountLinkState
+    data class Mismatch(val core: Identity) : CoreAccountLinkState
+    data object Unverified : CoreAccountLinkState
+}
+
+/** Account-screen projection. [phone] always comes from the hosted Android login/backend. */
+data class AccountUiState(
+    val phone: Identity,
+    val core: CoreAccountLinkState,
 )
