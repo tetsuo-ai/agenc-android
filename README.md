@@ -1,10 +1,6 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="app/src/main/res/drawable-nodpi/agenc_mark.png">
-  <source media="(prefers-color-scheme: light)" srcset="branding/agenc-logo.svg">
-  <img src="branding/agenc-logo.svg" alt="AgenC" width="96">
-</picture>
+<img src="branding/agenc-logo-animated.svg" alt="AgenC" width="128">
 
 # AgenC AI Android
 

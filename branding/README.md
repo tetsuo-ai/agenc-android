@@ -15,6 +15,15 @@ Derived Android assets:
 | `drawable-nodpi/agenc_mark.png` | raster in-app fallback/preview | black-and-white mark; do not use as notification small icon |
 | `drawable/agenc_wordmark.xml` | in-app wordmark | separate `agenc` logotype geometry, white/tintable for dark surfaces |
 
+## README asset
+
+`agenc-logo-animated.svg` is a repository-README derivative only: the exact
+canonical mark geometry centered on a white rounded tile with a hairline
+border and a 12-second SMIL rotation (GitHub renders SMIL animation inside
+`<img>` embeds; the white tile keeps the black mark legible on the dark
+theme). It is not an app asset and must never be used as a launcher or
+notification icon.
+
 ## Update procedure
 
 1. Replace the canonical SVG only with an approved AgenC source.
