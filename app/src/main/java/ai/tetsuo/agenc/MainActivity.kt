@@ -6,7 +6,7 @@ import ai.tetsuo.agenc.data.DaemonHub
 import ai.tetsuo.agenc.data.HistoryLoadState
 import ai.tetsuo.agenc.data.PendingLedgerResponseRecord
 import ai.tetsuo.agenc.data.hasCorrelatedLedgerReceipt
-import ai.tetsuo.agenc.data.linkedAccountIdentity
+import ai.tetsuo.agenc.data.reconcileAccountIdentity
 import ai.tetsuo.agenc.model.LedgerSolanaTransferClientAction
 import ai.tetsuo.agenc.model.LedgerTransferReceipt
 import ai.tetsuo.agenc.model.PendingLedgerInteraction
@@ -21,7 +21,6 @@ import ai.tetsuo.agenc.ui.AgenCTheme
 import ai.tetsuo.agenc.ui.chat.ChatScreen
 import ai.tetsuo.agenc.ui.chat.ChatConnectionState
 import ai.tetsuo.agenc.ui.screens.AppRoute
-import ai.tetsuo.agenc.ui.screens.DeviceCodeUi
 import ai.tetsuo.agenc.ui.screens.MainTab
 import ai.tetsuo.agenc.ui.screens.RootNav
 import android.Manifest
@@ -31,6 +30,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -79,6 +79,17 @@ private data class ActiveLedgerElicitation(
     val sourceAddress: String,
     val submittedReceipt: LedgerTransferReceipt? = null,
 )
+
+/** Pure onboarding route: Welcome is local; only a completed code claim can enter Main. */
+internal fun resolveAppRoute(
+    signedIn: Boolean,
+    hasPairedMachine: Boolean,
+    pairingStarted: Boolean,
+): AppRoute = when {
+    signedIn && hasPairedMachine -> AppRoute.Main
+    pairingStarted -> AppRoute.Pairing
+    else -> AppRoute.Welcome
+}
 
 internal enum class LedgerHostExitAction {
     Proceed,
@@ -167,9 +178,9 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * The single source of truth for which screen shows: the auth state + paired-machine drive the
- * route (Login → Pairing → Main), and an opened session overlays the Chat screen. All screens are
- * stateless composables; this is the only place the data layer (AppGraph) is read.
+ * The single source of truth for which screen shows: the CLI-owned code authenticates and pairs in
+ * one Pairing route, then a complete account+host session enters Main. An opened session overlays
+ * Chat. All screens are stateless composables; this is the only place AppGraph is read.
  */
 @Composable
 fun AgenCRoot(
@@ -187,7 +198,7 @@ fun AgenCRoot(
     val relayTicketVersion by auth.relayTicketVersion.collectAsState()
     val sessions by hub.sessions.collectAsState()
     val connectionState by hub.state.collectAsState()
-    val coreIdentity by hub.accountIdentity.collectAsState()
+    val coreAccountState by hub.coreAccountState.collectAsState()
     val pendingLedgerInteraction by hub.pendingLedgerInteraction.collectAsState()
     val pendingOpenId by pendingOpen.collectAsState()
     val pendingPairCode by pendingPair.collectAsState()
@@ -200,7 +211,11 @@ fun AgenCRoot(
     var ledgerReceiptOutboxVersion by remember { mutableStateOf(0) }
     var mainTab by remember { mutableStateOf(MainTab.Home) }
     var sessionsQuery by rememberSaveable { mutableStateOf("") }
-    var startingLogin by remember { mutableStateOf(false) }
+    // Preserve the Welcome -> Pairing step across rotation. The explicit key avoids inheriting a
+    // positional rememberSaveable value from older APK layouts during a rolling install.
+    var onboardingPairingStarted by rememberSaveable("onboarding-pairing-v2") {
+        mutableStateOf(false)
+    }
     var isLinking by remember { mutableStateOf(false) }
     var pairingError by remember { mutableStateOf<String?>(null) }
     var pairingPrefill by remember { mutableStateOf<String?>(null) }
@@ -208,10 +223,15 @@ fun AgenCRoot(
     var mutedSessions by remember { mutableStateOf(AppGraph.prefs.mutedSessions) }
 
     val signedIn = authState is AuthManager.State.SignedIn
-    val route = when {
-        signedIn && pairedMachine != null -> AppRoute.Main
-        signedIn -> AppRoute.Pairing
-        else -> AppRoute.Login
+    val route = resolveAppRoute(
+        signedIn = signedIn,
+        hasPairedMachine = pairedMachine != null,
+        pairingStarted = onboardingPairingStarted,
+    )
+    BackHandler(enabled = route == AppRoute.Pairing) {
+        pairingError = null
+        pairingPrefill = null
+        onboardingPairingStarted = false
     }
 
     // AgenC now uses one always-dark visual system from onboarding through the signed-in shell.
@@ -262,7 +282,11 @@ fun AgenCRoot(
 
     LaunchedEffect(pendingPairCode, route) {
         val code = pendingPairCode ?: return@LaunchedEffect
-        if (route != AppRoute.Pairing) return@LaunchedEffect
+        if (route == AppRoute.Main) {
+            pendingPair.value = null
+            return@LaunchedEffect
+        }
+        onboardingPairingStarted = true
         pairingPrefill = code
         pendingPair.value = null
     }
@@ -280,15 +304,6 @@ fun AgenCRoot(
             hub.refreshSessions()
         }
     }
-    // Clear the transient "starting login" spinner once the backend responds.
-    LaunchedEffect(authState, lastError) {
-        if (authState !is AuthManager.State.SignedOut || lastError != null) startingLogin = false
-    }
-
-    // NOTE: sign-in is the instant device flow (backend IDENTITY_PROVIDER=mock auto-approves the
-    // poll) — no browser hop. If a real OAuth provider is ever re-enabled on the backend, the
-    // Polling state's verificationUri must be opened in the browser here for the poll to succeed.
-
     // Demo: which chat session is awaiting a "transfer sent" reply once the Ledger flow completes.
     var demoReplySession by remember { mutableStateOf<String?>(null) }
     val ledgerUi by AppGraph.ledger.ui.collectAsState()
@@ -592,14 +607,8 @@ fun AgenCRoot(
     // the chat so returning preserves its selected tab, search query, and scroll/saveable state.
     val open = selected
 
-    val deviceCode = (authState as? AuthManager.State.Polling)
-        ?.let { DeviceCodeUi(it.userCode, it.verificationUri) }
     val cachedIdentity = (authState as? AuthManager.State.SignedIn)?.identity
-    val identity = linkedAccountIdentity(cachedIdentity, coreIdentity)?.takeUnless {
-        !it.runtimeLinked &&
-            it.displayName.equals("User", ignoreCase = true) &&
-            it.handle.equals("user@example.com", ignoreCase = true)
-    }
+    val account = reconcileAccountIdentity(cachedIdentity, coreAccountState)
 
     // `/login` and `/logout` can happen in the desktop TUI after the relay socket is already open.
     // Refresh while Account is visible so the phone links/clears that identity without reconnecting.
@@ -636,14 +645,13 @@ fun AgenCRoot(
         ) {
             RootNav(
                 route = route,
-                deviceCode = deviceCode,
-                isLoading = startingLogin && deviceCode == null,
-                loginError = if (route == AppRoute.Login) lastError else null,
-                onStartLogin = { startingLogin = true; auth.startLogin(it) },
-                onCancelLogin = { startingLogin = false; auth.cancelLogin() },
+                onWelcomeContinue = {
+                    pairingError = null
+                    onboardingPairingStarted = true
+                },
                 machineName = pairedMachine,
                 isLinking = isLinking,
-                pairingError = pairingError,
+                pairingError = pairingError ?: lastError,
                 onClaimCode = { code ->
                     pairingPrefill = null
                     scope.launch {
@@ -676,7 +684,13 @@ fun AgenCRoot(
                     selected = s
                 },
                 onMainTabChange = { mainTab = it },
-                identity = identity,
+                account = account,
+                onRefreshAccount = {
+                    scope.launch {
+                        auth.refreshCanonicalProfile()
+                        if (auth.isSignedIn) hub.refreshDaemonInfo()
+                    }
+                },
                 onLogout = logout@{
                     val record = AppGraph.prefs.pendingLedgerResponse()
                     val criticalUi =
@@ -734,6 +748,9 @@ fun AgenCRoot(
                     }
                     AppGraph.ledger.closeFlow()
                     auth.signOut()
+                    onboardingPairingStarted = false
+                    pairingPrefill = null
+                    pairingError = null
                     selected = null
                     mainTab = MainTab.Home
                     sessionsQuery = ""

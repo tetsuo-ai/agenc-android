@@ -551,7 +551,10 @@ class Prefs(context: Context) {
 
         // Keys mirroring the iOS UserDefaults keys.
         const val KEY_IDENTITY_NAME = "agenc.identity.name"
+        const val KEY_IDENTITY_EMAIL = "agenc.identity.email"
+        /** Legacy pre-canonical-profile field; retained only for one-way cache migration. */
         const val KEY_IDENTITY_HANDLE = "agenc.identity.handle"
+        /** Legacy paid-plan cache. The current Android product always presents the Free plan. */
         const val KEY_IDENTITY_TIER = "agenc.identity.tier"
         const val KEY_IDENTITY_ACCOUNT_ID = "agenc.identity.account_id"
         const val KEY_RELAY_URL = "agenc.relay.url"

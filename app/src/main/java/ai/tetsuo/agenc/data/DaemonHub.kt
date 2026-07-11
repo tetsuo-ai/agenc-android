@@ -1,6 +1,7 @@
 package ai.tetsuo.agenc.data
 
 import ai.tetsuo.agenc.model.AgentSummary
+import ai.tetsuo.agenc.model.CoreAccountState
 import ai.tetsuo.agenc.model.Event
 import ai.tetsuo.agenc.model.EventMsg
 import ai.tetsuo.agenc.model.InitialMessage
@@ -14,7 +15,6 @@ import ai.tetsuo.agenc.model.PendingLedgerInteraction
 import ai.tetsuo.agenc.model.SessionLifecycle
 import ai.tetsuo.agenc.model.SessionSummary
 import ai.tetsuo.agenc.model.TranscriptItem
-import ai.tetsuo.agenc.model.Tier
 import ai.tetsuo.agenc.net.JsonRpcConnection
 import ai.tetsuo.agenc.net.JsonValue
 import ai.tetsuo.agenc.net.PortalEventAdapter
@@ -115,6 +115,36 @@ internal fun elicitationResponsePayload(
     return jsonObject(fields)
 }
 
+/** Pure, fail-closed parser for Core's `auth.whoami` response. */
+internal fun parseCoreAccountState(result: JsonValue): CoreAccountState {
+    return when (result["authenticated"]?.boolValue) {
+        false -> CoreAccountState.NotLoggedIn
+        null -> CoreAccountState.Unavailable
+        true -> {
+            val raw = result["identity"] as? JsonValue.Obj
+                ?: return CoreAccountState.Authenticated(identity = null)
+            val accountId = raw["accountId"]?.stringValue?.takeIf { it.isNotBlank() }
+            val email = raw["email"]?.stringValue?.takeIf { it.isNotBlank() }.orEmpty()
+            val handle = raw["handle"]?.stringValue?.takeIf { it.isNotBlank() }
+            val displayName = raw["displayName"]?.stringValue?.takeIf { it.isNotBlank() }
+                ?: "Core account"
+            val hasVerifiableIdentity = accountId != null || email.isNotBlank() || handle != null
+            CoreAccountState.Authenticated(
+                identity = if (hasVerifiableIdentity) {
+                    Identity(
+                        displayName = displayName,
+                        email = email,
+                        accountId = accountId,
+                        handle = handle,
+                    )
+                } else {
+                    null
+                },
+            )
+        }
+    }
+}
+
 /**
  * Direct port of the iOS app's DaemonHub.swift — the connection orchestrator.
  *
@@ -183,9 +213,9 @@ class DaemonHub(
     private val _daemonProvider = MutableStateFlow("")
     val daemonProvider: StateFlow<String> = _daemonProvider.asStateFlow()
 
-    private val _accountIdentity = MutableStateFlow<Identity?>(null)
-    /** Authenticated identity reported by the connected Core. */
-    val accountIdentity: StateFlow<Identity?> = _accountIdentity.asStateFlow()
+    private val _coreAccountState = MutableStateFlow<CoreAccountState>(CoreAccountState.Offline)
+    /** Explicit live auth state reported by the connected Core. */
+    val coreAccountState: StateFlow<CoreAccountState> = _coreAccountState.asStateFlow()
 
     /** Capability-routed Ledger request, independent of whichever chat happens to be open. */
     private val _pendingLedgerInteraction = MutableStateFlow<PendingLedgerInteraction?>(null)
@@ -415,6 +445,7 @@ class DaemonHub(
                         hydratedConnectionFor.clear()
                         _daemonProtocol.value = daemonProtocol
                         _state.value = ConnectionState.Connected
+                        _coreAccountState.value = CoreAccountState.Checking
                         startPump(c)
                         flushPendingSends()
                         metadataRefreshJob?.cancel()
@@ -538,41 +569,27 @@ class DaemonHub(
     /** Daemon identity via auth.whoami (real app-server method). */
     suspend fun refreshDaemonInfo() {
         val c = conn?.takeIf { connectionsEnabled } ?: return
-        val r = runCatching { c.send("auth.whoami", jsonObject()) }.getOrNull() ?: return
+        val r = try {
+            c.send("auth.whoami", jsonObject())
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            mutex.withLock {
+                if (connectionsEnabled && conn === c) {
+                    _coreAccountState.value = CoreAccountState.Unavailable
+                }
+            }
+            return
+        }
         val model = r["model"]?.stringValue ?: r["identity"]?.get("model")?.stringValue
         val provider = r["provider"]?.stringValue ?: r["identity"]?.get("provider")?.stringValue
-        val raw = r["identity"]
-        val identity = if (r["authenticated"]?.boolValue == true && raw != null) {
-            val email = raw["email"]?.stringValue.orEmpty()
-            val handle = raw["handle"]?.stringValue
-                ?.takeIf { it.isNotBlank() }
-                ?: email
-            val displayName = raw["displayName"]?.stringValue
-                ?.takeIf { it.isNotBlank() }
-                ?: handle.substringBefore('@').takeIf { it.isNotBlank() }
-                ?: "Account"
-            val reportedTier = (
-                raw["plan"]?.stringValue ?: r["subscriptionTier"]?.stringValue
-            )?.let { plan ->
-                Tier.entries.firstOrNull { it.name.equals(plan, ignoreCase = true) }
-            }
-            Identity(
-                displayName = displayName,
-                handle = handle,
-                tier = reportedTier ?: Tier.free,
-                accountId = raw["accountId"]?.stringValue?.takeIf { it.isNotBlank() },
-                tierVerified = reportedTier != null,
-            )
-        } else {
-            null
-        }
+        val accountState = parseCoreAccountState(r)
         mutex.withLock {
             if (!connectionsEnabled || conn !== c) return
             if (model != null) _daemonModel.value = model
             if (provider != null) _daemonProvider.value = provider
-            // Runtime identity is a live projection, never the phone bearer cache. Keeping the two
-            // stores separate prevents Core account A from becoming phone account B after restart.
-            _accountIdentity.value = identity
+            // Never retain a previously linked account when Core logs out or this read changes.
+            _coreAccountState.value = accountState
         }
     }
 
@@ -848,7 +865,7 @@ class DaemonHub(
                 hydratedConnectionFor.clear()
                 _sessions.value = emptyList()
                 _agents.value = emptyList()
-                _accountIdentity.value = null
+                _coreAccountState.value = CoreAccountState.Offline
                 _state.value = ConnectionState.Disconnected
                 false to listOfNotNull(current, inFlight).distinct()
             }
@@ -885,7 +902,7 @@ class DaemonHub(
             forcedReconnectRunning = false
             attachedConnectionFor.clear()
             hydratedConnectionFor.clear()
-            _accountIdentity.value = null
+            _coreAccountState.value = CoreAccountState.Offline
             _state.value = ConnectionState.Disconnected
             listOfNotNull(current, inFlight).distinct()
         }
@@ -936,7 +953,7 @@ class DaemonHub(
         _daemonProtocol.value = ""
         _daemonModel.value = ""
         _daemonProvider.value = ""
-        _accountIdentity.value = null
+        _coreAccountState.value = CoreAccountState.Offline
         currentlyOpenSessionId = null
         notifications?.clearAll()
     }
@@ -1825,7 +1842,7 @@ class DaemonHub(
             if (conn !== source) return@withLock false
             conn = null
             connecting = false
-            _accountIdentity.value = null
+            _coreAccountState.value = CoreAccountState.Offline
             _state.value = ConnectionState.Failed("disconnected")
             if (connectionsEnabled) scheduleReconnect()
             true

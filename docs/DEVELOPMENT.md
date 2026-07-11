@@ -90,7 +90,8 @@ outside the device.
 
 ## Manual remote-control matrix
 
-- [ ] login completes and Account shows the phone identity
+- [ ] login completes and `01 AgenC account` refreshes the exact `/v1/auth/me`
+      display name while showing a photo slot and only `FREE`; no email is rendered
 - [ ] QR and manual code both pair with `agenc remote on`
 - [ ] Core with a configured provider answers a phone message
 - [ ] live chunks stream smoothly; reopening hydrates without a top-of-list flash
@@ -103,7 +104,11 @@ outside the device.
 - [ ] tapping the notification opens that exact session
 - [ ] visible foreground session does not produce a duplicate notification
 - [ ] mute, quiet hours, completion toggle, and duration threshold suppress correctly
-- [ ] Core `/login` identity links; conflicting account ids show mismatch
+- [ ] `02 Connected Core` distinguishes Checking, Offline, Unavailable, Not
+      logged in, Linked, Mismatch, and Unverified
+- [ ] Core `/login` with the same account links; conflicting ids show mismatch
+      without replacing the hosted account profile
+- [ ] failed Core identity refresh says Unavailable, never Not logged in
 - [ ] swipe delete waits for Core and keeps the row on failure
 
 ## Manual Ledger rehearsal

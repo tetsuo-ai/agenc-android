@@ -279,8 +279,6 @@ class JsonRpcConnection(
             // Explicit opt-in: Core may push status for sessions this phone has not attached yet.
             "portal.mobile.status.push.v1" to true.jv(),
             "portal.auth.read" to true.jv(),
-            "portal.auth.login" to true.jv(),
-            "portal.auth.logout" to true.jv(),
             "portal.session.attach" to true.jv(),
             "portal.agent.list" to true.jv(),
             "portal.agent.start" to true.jv(),

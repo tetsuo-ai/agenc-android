@@ -7,7 +7,7 @@ import androidx.compose.ui.graphics.Color
  * The Android app talks to the SAME hosted backend (id.agenc.ag) and the SAME relay worker.
  */
 object AppConfig {
-    /** Hosted backend (OAuth 2.0 device-authorization grant + pairing). */
+    /** Hosted backend for CLI-owned pairing and account/session refresh. */
     const val BACKEND_BASE = "https://id.agenc.ag"
 
     /** AgenC relay (Cloudflare worker). The app dials {RELAY_BASE}/v1/client?ticket=… */
@@ -22,8 +22,7 @@ object AppConfig {
 
     // Backend REST paths
     object Path {
-        const val LOGIN_START = "/v1/auth/login/start"
-        const val LOGIN_POLL = "/v1/auth/login/poll"
+        const val AUTH_ME = "/v1/auth/me"
         const val LOGOUT = "/v1/auth/logout"
         const val RELAY_TICKET = "/v1/relay/ticket"
         const val PAIR_CLAIM = "/v1/pair/claim"

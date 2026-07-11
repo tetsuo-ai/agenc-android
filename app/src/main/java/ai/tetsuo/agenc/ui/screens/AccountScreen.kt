@@ -3,8 +3,9 @@ package ai.tetsuo.agenc.ui.screens
 import ai.tetsuo.agenc.data.AppGraph
 import ai.tetsuo.agenc.data.Prefs
 import ai.tetsuo.agenc.R
+import ai.tetsuo.agenc.model.AccountUiState
+import ai.tetsuo.agenc.model.CoreAccountLinkState
 import ai.tetsuo.agenc.model.Identity
-import ai.tetsuo.agenc.model.Tier
 import ai.tetsuo.agenc.notif.NotificationCoordinator
 import ai.tetsuo.agenc.ui.AgenCTheme
 import ai.tetsuo.agenc.ui.HapticCue
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -57,10 +59,12 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -75,10 +79,50 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
+internal enum class AccountSection {
+    AgenCAccount,
+    ConnectedCore,
+    Notifications,
+    Delivery,
+    HardwareWallet,
+    Security,
+}
+
+/** The only product plan currently offered; raw backend/Core tier strings never reach the UI. */
+internal const val CURRENT_ACCOUNT_PLAN_LABEL = "FREE"
+
+/** Single source of truth for headings so optional sections never produce duplicate numbers. */
+internal fun accountSections(
+    hasNotificationSettings: Boolean,
+    hasHardwareWallet: Boolean,
+): List<AccountSection> = buildList {
+    add(AccountSection.AgenCAccount)
+    add(AccountSection.ConnectedCore)
+    if (hasNotificationSettings) {
+        add(AccountSection.Notifications)
+        add(AccountSection.Delivery)
+    }
+    if (hasHardwareWallet) add(AccountSection.HardwareWallet)
+    add(AccountSection.Security)
+}
+
+internal fun coreAccountStatusLabel(state: CoreAccountLinkState): String = when (state) {
+    CoreAccountLinkState.Checking -> "CHECKING"
+    CoreAccountLinkState.Offline -> "OFFLINE"
+    CoreAccountLinkState.Unavailable -> "UNAVAILABLE"
+    CoreAccountLinkState.NotLoggedIn -> "NOT LOGGED IN"
+    is CoreAccountLinkState.Linked -> "LINKED"
+    is CoreAccountLinkState.Mismatch -> "ACCOUNT MISMATCH"
+    CoreAccountLinkState.Unverified -> "UNVERIFIED"
+}
+
 /** Account, preferences and hardware wallet controls in the shared black AgenC shell. */
 @Composable
 fun AccountScreen(
-    identity: Identity?,
+    account: AccountUiState?,
+    machineName: String?,
+    connectionStatus: ConnectionStatus,
+    onRefreshAccount: () -> Unit,
     onLogout: () -> Unit,
     prefs: Prefs? = runCatching { AppGraph.prefs }.getOrNull(),
     notifications: NotificationCoordinator? = runCatching { AppGraph.notifications }.getOrNull(),
@@ -117,8 +161,12 @@ fun AccountScreen(
         }
         notificationStatusRevision += 1
     }
-    val walletSectionNumber = if (prefs == null) 2 else 4
-    val securitySectionNumber = walletSectionNumber + if (onOpenLedger == null) 0 else 1
+    val sections = accountSections(
+        hasNotificationSettings = prefs != null,
+        hasHardwareWallet = onOpenLedger != null,
+    )
+    fun indexOf(section: AccountSection): String =
+        (sections.indexOf(section) + 1).toString().padStart(2, '0')
 
     LazyColumn(
         modifier = Modifier
@@ -134,16 +182,32 @@ fun AccountScreen(
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         item(key = "account-header") {
-            MainScreenHeader(section = "AgenC / Identity", title = "Account")
+            MainScreenHeader(section = "AgenC / Account", title = "Account")
         }
 
-        item(key = "identity-heading") { SectionHeading(index = "01", title = "Identity") }
-        item(key = "identity") { IdentityPanel(identity) }
+        item(key = "identity-heading") {
+            SectionHeading(index = indexOf(AccountSection.AgenCAccount), title = "AgenC account")
+        }
+        item(key = "identity") { IdentityPanel(account?.phone) }
+
+        item(key = "core-heading") {
+            SectionHeading(index = indexOf(AccountSection.ConnectedCore), title = "Connected Core")
+        }
+        item(key = "core-account") {
+            ConnectedCorePanel(
+                state = account?.core ?: CoreAccountLinkState.Unavailable,
+                machineName = machineName,
+                connectionStatus = connectionStatus,
+                onRefresh = onRefreshAccount,
+            )
+        }
 
         if (prefs != null) {
             item(key = "notification-settings") {
                 NotificationsSection(
                     prefs = prefs,
+                    notificationIndex = indexOf(AccountSection.Notifications),
+                    deliveryIndex = indexOf(AccountSection.Delivery),
                     deliveryStatus = notificationStatus,
                     testResult = notificationTestResult,
                     onOpenSystemSettings = openNotificationSettings,
@@ -154,13 +218,13 @@ fun AccountScreen(
 
         if (onOpenLedger != null) {
             item(key = "wallet-heading") {
-                SectionHeading(index = walletSectionNumber.toString().padStart(2, '0'), title = "Hardware wallet")
+                SectionHeading(index = indexOf(AccountSection.HardwareWallet), title = "Hardware wallet")
             }
             item(key = "wallet") { WalletAction(onOpenLedger) }
         }
 
         item(key = "security-heading") {
-            SectionHeading(index = securitySectionNumber.toString().padStart(2, '0'), title = "Security")
+            SectionHeading(index = indexOf(AccountSection.Security), title = "Security")
         }
         item(key = "logout") { LogoutAction { showLogoutConfirm = true } }
     }
@@ -179,6 +243,8 @@ fun AccountScreen(
 @Composable
 private fun NotificationsSection(
     prefs: Prefs,
+    notificationIndex: String,
+    deliveryIndex: String,
     deliveryStatus: NotificationCoordinator.DeliveryStatus?,
     testResult: String?,
     onOpenSystemSettings: () -> Unit,
@@ -197,7 +263,7 @@ private fun NotificationsSection(
     )
 
     Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        SectionHeading(index = "02", title = "Notifications")
+        SectionHeading(index = notificationIndex, title = "Notifications")
         SettingsGroup {
             SettingsActionRow(
                 label = "Android delivery",
@@ -256,7 +322,7 @@ private fun NotificationsSection(
             )
         }
 
-        SectionHeading(index = "03", title = "Delivery")
+        SectionHeading(index = deliveryIndex, title = "Delivery")
         SettingsGroup {
             ToggleRow("Quiet hours", quietEnabled, enabled = notifyTurnDone) {
                 quietEnabled = it
@@ -373,60 +439,164 @@ private fun SettingsActionRow(
 }
 
 @Composable
-private fun IdentityPanel(identity: Identity?) {
-    val displayName = identity?.displayName?.takeIf { it.isNotBlank() } ?: "Loading account"
-    val handle = identity?.handle?.takeIf { it.isNotBlank() } ?: "Waiting for identity"
-    Row(
+private fun ConnectedCorePanel(
+    state: CoreAccountLinkState,
+    machineName: String?,
+    connectionStatus: ConnectionStatus,
+    onRefresh: () -> Unit,
+) {
+    val haptics = rememberAgenCHaptics()
+    val status = coreAccountStatusLabel(state)
+    val statusColor = if (state is CoreAccountLinkState.Mismatch) {
+        MaterialTheme.colorScheme.error
+    } else {
+        MainPalette.ink
+    }
+    val detail = when (state) {
+        CoreAccountLinkState.Checking ->
+            "Reading the AgenC account currently active in Core."
+        CoreAccountLinkState.Offline ->
+            "This phone cannot reach the paired Core right now."
+        CoreAccountLinkState.Unavailable ->
+            "Core is connected, but its account status could not be read."
+        CoreAccountLinkState.NotLoggedIn ->
+            "No AgenC account is active in Core. Run /login in the Core TUI, then refresh."
+        is CoreAccountLinkState.Linked ->
+            "This phone and Core are authenticated as the same AgenC account."
+        is CoreAccountLinkState.Mismatch ->
+            "Core is authenticated as another account. Run /logout, then /login in Core."
+        CoreAccountLinkState.Unverified ->
+            "Core is authenticated, but it did not return enough identity data to verify the link."
+    }
+    val connectionLabel = when (connectionStatus) {
+        ConnectionStatus.Connected -> "ONLINE"
+        ConnectionStatus.Connecting -> "CONNECTING"
+        ConnectionStatus.Offline -> "OFFLINE"
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, MainPalette.line, RoundedCornerShape(20.dp))
-            .background(MainPalette.surface, RoundedCornerShape(20.dp))
-            .padding(18.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clip(RoundedCornerShape(18.dp))
+            .background(MainPalette.surface)
+            .border(1.dp, MainPalette.line, RoundedCornerShape(18.dp))
+            .semantics { stateDescription = status },
     ) {
-        Box(
-            modifier = Modifier
-                .size(58.dp)
-                .border(1.dp, MainPalette.ink, RoundedCornerShape(16.dp)),
-            contentAlignment = Alignment.Center,
+        Column(
+            modifier = Modifier.padding(horizontal = 17.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = identity?.let(::initials) ?: "—",
-                color = MainPalette.ink,
-                fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.titleMedium,
-                letterSpacing = .8.sp,
-            )
-        }
-        Spacer(Modifier.width(16.dp))
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(displayName, color = MainPalette.ink, style = MaterialTheme.typography.titleLarge)
-            Text(handle, color = MainPalette.muted, style = MaterialTheme.typography.bodyMedium)
-            when {
-                identity?.runtimeLinked == true -> Text(
-                    "RUNTIME LINKED",
-                    color = MainPalette.ink,
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        text = machineName?.takeIf { it.isNotBlank() } ?: "Paired computer",
+                        color = MainPalette.ink,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = connectionLabel,
+                        color = MainPalette.quiet,
+                        style = MaterialTheme.typography.labelSmall,
+                        letterSpacing = .8.sp,
+                    )
+                }
+                Text(
+                    text = status,
+                    color = statusColor,
                     style = MaterialTheme.typography.labelSmall,
-                    letterSpacing = .8.sp,
-                )
-                identity?.runtimeMismatch == true -> Text(
-                    "RUNTIME ACCOUNT MISMATCH",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.labelSmall,
-                    letterSpacing = .6.sp,
+                    letterSpacing = .7.sp,
+                    textAlign = TextAlign.End,
                 )
             }
+            Text(detail, color = MainPalette.muted, style = MaterialTheme.typography.bodyMedium)
+
         }
-        if (identity != null && identity.tierVerified) {
-            TierLabel(identity.tier)
+        HorizontalDivider(thickness = 1.dp, color = MainPalette.lineSoft)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 52.dp)
+                .clickable(role = Role.Button, onClickLabel = "Refresh Core account") {
+                    haptics.perform(HapticCue.Action)
+                    onRefresh()
+                }
+                .padding(horizontal = 17.dp, vertical = 12.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                text = "REFRESH",
+                color = MainPalette.ink,
+                style = MaterialTheme.typography.labelMedium,
+                letterSpacing = .9.sp,
+            )
         }
     }
 }
 
 @Composable
-private fun TierLabel(tier: Tier) {
+private fun IdentityPanel(identity: Identity?) {
+    val displayName = identity?.displayName?.takeIf { it.isNotBlank() }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 92.dp)
+            .border(1.dp, MainPalette.line, RoundedCornerShape(20.dp))
+            .background(MainPalette.surface, RoundedCornerShape(20.dp))
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(60.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(MainPalette.surfaceRaised)
+                .border(1.dp, MainPalette.line, RoundedCornerShape(18.dp))
+                .semantics { contentDescription = "Profile picture" },
+            contentAlignment = Alignment.Center,
+        ) {
+            identity?.let(::initials)?.let { monogram ->
+                Text(
+                    text = monogram,
+                    color = MainPalette.ink,
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.titleMedium,
+                    letterSpacing = .8.sp,
+                )
+            }
+        }
+        Spacer(Modifier.width(16.dp))
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (displayName != null) {
+                Text(
+                    text = displayName,
+                    color = MainPalette.ink,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .width(156.dp)
+                        .height(18.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(MainPalette.lineSoft)
+                        .semantics { contentDescription = "Account profile pending" },
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        FreeTierLabel()
+    }
+}
+
+@Composable
+private fun FreeTierLabel() {
     Text(
-        text = tier.label.uppercase(),
+        text = CURRENT_ACCOUNT_PLAN_LABEL,
         color = MainPalette.ink,
         style = MaterialTheme.typography.labelSmall,
         letterSpacing = .9.sp,
@@ -747,24 +917,49 @@ private fun localizedHour(hour: Int, use24Hour: Boolean): String {
     return SimpleDateFormat(pattern, Locale.getDefault()).format(calendar.time)
 }
 
-private fun initials(identity: Identity): String {
+private fun initials(identity: Identity): String? {
     val parts = identity.displayName.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
-    return parts.take(2).mapNotNull { it.firstOrNull()?.uppercaseChar() }.joinToString("").ifBlank { "A" }
+    return parts.take(2)
+        .mapNotNull { it.firstOrNull()?.uppercaseChar() }
+        .joinToString("")
+        .takeIf { it.isNotBlank() }
 }
 
 @Preview(name = "Account / dark", showBackground = true, backgroundColor = 0xFF000000)
 @Composable
 private fun AccountScreenPreview() {
+    val identity = Identity(
+        displayName = "Pavel C.",
+        email = "pavel@agenc.tech",
+        accountId = "acct-preview",
+    )
     AgenCTheme {
         AccountScreen(
-            identity = Identity(displayName = "Pavel C.", handle = "@pavel", tier = Tier.pro),
+            account = AccountUiState(
+                phone = identity,
+                core = CoreAccountLinkState.Linked(identity),
+            ),
+            machineName = "Pavel's MacBook Pro",
+            connectionStatus = ConnectionStatus.Connected,
+            onRefreshAccount = {},
             onLogout = {},
         )
     }
 }
 
-@Preview(name = "Account / loading", showBackground = true, backgroundColor = 0xFF000000)
+@Preview(name = "Account / Core not logged in", showBackground = true, backgroundColor = 0xFF000000)
 @Composable
-private fun AccountScreenLoadingPreview() {
-    AgenCTheme { AccountScreen(identity = null, onLogout = {}) }
+private fun AccountScreenCoreLoggedOutPreview() {
+    AgenCTheme {
+        AccountScreen(
+            account = AccountUiState(
+                phone = Identity("Pavel C.", "pavel@agenc.tech", "acct-preview"),
+                core = CoreAccountLinkState.NotLoggedIn,
+            ),
+            machineName = "Pavel's MacBook Pro",
+            connectionStatus = ConnectionStatus.Connected,
+            onRefreshAccount = {},
+            onLogout = {},
+        )
+    }
 }
