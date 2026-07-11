@@ -23,6 +23,7 @@ Bluetooth LE.
 </p>
 
 <a href="https://agenc.tech">Website</a> ·
+<a href="https://github.com/tetsuo-ai/agenc-android/releases/latest">Download APK</a> ·
 <a href="https://github.com/tetsuo-ai/agenc-core">AgenC Core</a> ·
 <a href="https://github.com/tetsuo-ai/agenc-ios">iOS App</a> ·
 <a href="#documentation">Documentation</a>
@@ -171,6 +172,19 @@ The full protocol, fence ordering, receipt schema, and recovery rules are specif
 
 ## Getting started
 
+### Install AgenC AI
+
+Download the latest signed APK from [GitHub Releases](https://github.com/tetsuo-ai/agenc-android/releases/latest)
+and open it on an Android 8.0+ phone. Android may ask you to allow installs from the browser or
+file-manager app you used to open the download.
+
+Every release includes a `.sha256` checksum. Official APK updates are signed by the AgenC AI
+release certificate with this SHA-256 fingerprint:
+
+```text
+6B:86:E6:60:8D:F8:95:A8:CC:75:F7:4E:A4:7C:0E:95:68:BE:64:2A:C0:6E:65:AC:B5:7B:46:84:7F:AA:1F:1D
+```
+
 ### What you need
 
 - A computer running a compatible AgenC Core daemon with `agenc remote on`
@@ -227,7 +241,7 @@ Point `sdk.dir` at your Android SDK in a machine-local `local.properties` (never
 then run the full local gate:
 
 ```sh
-./gradlew testDebugUnitTest lintDebug assembleDebug
+./gradlew --no-daemon testDebugUnitTest testReleaseUnitTest lintDebug lintRelease assembleRelease
 ```
 
 Install the debug APK on an explicitly selected device:
@@ -315,11 +329,12 @@ Deploy or restart Core before shipping a build that relies on the newer capabili
 
 ## Status
 
-Current build metadata: `ai.tetsuo.agenc`, `versionName 0.1`, `versionCode 1` — an early,
-actively developed release. There is no hosted CI or store pipeline yet; the local Gradle
-gates plus the manual device matrices in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) are
-authoritative, and a distributable release requires a version bump and the project-approved
-signing/AAB process. `Demo.ENABLED` must remain `false` in every distributed artifact.
+Current build metadata: `ai.tetsuo.agenc`, `versionName 0.1.0`, `versionCode 1`. GitHub Actions
+runs unit tests, debug/release lint, and an unsigned release build on every pull request and push
+to `main`; the physical-phone and Ledger matrices in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) remain manual gates. Public builds are signed with the
+long-lived AgenC AI release certificate and distributed from GitHub Releases with a SHA-256
+checksum. `Demo.ENABLED` remains `false`, with no bundled demo destination or transfer amount.
 
 ## Ecosystem
 

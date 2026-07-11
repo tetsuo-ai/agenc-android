@@ -1303,8 +1303,8 @@ private fun LedgerScreenScanningPreview() {
         LedgerScreen(
             ui = LedgerUi.Scanning(
                 devices = listOf(
-                    "Ledger Flex 7B2A" to "F0:12:9C:4E:7B:2A",
-                    "Ledger Flex D410" to "C8:55:31:AA:D4:10",
+                    "Ledger Flex" to "00:00:00:00:00:01",
+                    "Ledger Flex 2" to "00:00:00:00:00:02",
                 ),
             ),
             agentRequest = null,
@@ -1327,7 +1327,7 @@ private fun LedgerScreenConnectedManualPreview() {
     AgenCTheme {
         LedgerScreen(
             ui = LedgerUi.Connected(
-                deviceName = "Ledger Flex 7B2A",
+                deviceName = "Ledger Flex",
                 accounts = previewLedgerAccounts(),
                 selectedAccountKey = "0",
             ),

@@ -1,5 +1,6 @@
 # Gradle / Android build
 .gradle/
+.kotlin/
 build/
 app/build/
 /captures
@@ -8,6 +9,17 @@ app/build/
 
 # Local config (machine-specific SDK path)
 local.properties
+
+# Local secrets and release signing material
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p12
+*.pfx
+keystore.properties
+signing.properties
 
 # IDE
 *.iml

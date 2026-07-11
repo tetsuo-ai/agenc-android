@@ -39,11 +39,12 @@ object AppGraph {
 
     /**
      * The daemon auth cookie. With the real daemon this is the 64-hex value from
-     * ~/.agenc/daemon.cookie, delivered by the connector. The relay transport carries it through to
-     * the paired Mac; a missing cookie fails the local handshake rather than dialing with a fake one.
+     * ~/.agenc/daemon.cookie, injected by the connector. The relay transport carries this empty
+     * placeholder to the paired Mac, where the connector replaces it before forwarding initialize;
+     * a direct local connection fails closed rather than dialing with a bundled credential.
      * Set via [DAEMON_COOKIE_OVERRIDE] (e.g. for a dev daemon) before [init].
      */
-    var daemonCookie: String = DEFAULT_DEV_COOKIE
+    var daemonCookie: String = ""
 
     fun init(context: Context) {
         if (initialized) return
@@ -86,9 +87,6 @@ object AppGraph {
         val relayBase = auth.relayUrl()?.takeIf { it.isNotEmpty() } ?: AppConfig.RELAY_BASE
         return AppConfig.relayClientUrl(relayBase, ticket)
     }
-
-    private const val DEFAULT_DEV_COOKIE =
-        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 
     /** Set before [init] to override the daemon cookie (e.g. AGENC_DEV_COOKIE equivalent). */
     var DAEMON_COOKIE_OVERRIDE: String? = null

@@ -769,7 +769,7 @@ private fun ChatScreenIdlePreview() {
     AgenCTheme {
         ChatScreen(
             title = "Fix the test",
-            cwd = "/Users/me/projects/agenc-android",
+            cwd = "~/projects/agenc-android",
             items = sampleItems(),
             lifecycle = SessionLifecycle.Done,
             usage = TokenUsage(input = 1200, output = 380),

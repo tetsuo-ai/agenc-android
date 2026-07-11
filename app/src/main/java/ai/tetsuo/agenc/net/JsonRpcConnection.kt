@@ -238,7 +238,7 @@ class JsonRpcConnection(
                 resume(inbound.id, inbound.result)
             }
             is JsonRpcInbound.Failure -> {
-                android.util.Log.d("JsonRpc", "in error id=${inbound.id} code=${inbound.code} ${inbound.message.take(60)}")
+                android.util.Log.d("JsonRpc", "in error id=${inbound.id} code=${inbound.code}")
                 inbound.id?.let {
                     resume(it, ConnError.Rpc(inbound.code, inbound.message, inbound.dataCode))
                 }

@@ -21,11 +21,11 @@ logs.
 Run from the repository root:
 
 ```sh
-./gradlew testDebugUnitTest lintDebug assembleDebug
+./gradlew --no-daemon testDebugUnitTest testReleaseUnitTest lintDebug lintRelease assembleRelease
 git diff --check
 ```
 
-The current JVM suite covers 15 contract/state-machine classes and 55 tests:
+The JVM suite covers the protocol contracts, state machines, and public-release defaults:
 
 - connection-attempt single flight;
 - agent-status deduplication and terminal ordering;
@@ -43,8 +43,9 @@ Lint warnings about dependency freshness or Compose micro-optimizations may be
 reviewed separately, but a PR must have zero lint errors. Android 12+ data
 extraction rules explicitly exclude all app state from backup/device transfer.
 
-This repository has no hosted CI workflow. The PR must record the exact local
-commands and results used for verification.
+The hosted Android CI workflow runs the same test/lint/release-build gate for pull requests and
+pushes to `main`. The PR should still record any physical phone, relay, notification, or Ledger
+verification that CI cannot perform.
 
 ## APK and device installation
 
@@ -149,7 +150,8 @@ Also rehearse recovery without signing again:
 ## Release checklist
 
 - [ ] `Demo.ENABLED` is `false`
-- [ ] debug/release artifact contains no local endpoint/key override
+- [ ] demo destination and amount are empty/zero
+- [ ] release artifact contains no bundled daemon cookie or credential override
 - [ ] backup and device-transfer extraction remain disabled
 - [ ] Gradle tests, lint, assemble, and diff check pass
 - [ ] remote-control manual matrix completed on a physical phone
@@ -157,8 +159,12 @@ Also rehearse recovery without signing again:
 - [ ] no unintended mainnet transaction was signed or sent
 - [ ] launcher/adaptive/monochrome/notification assets show the AgenC mark
 - [ ] versionCode/versionName bumped for any distributable release
-- [ ] approved keystore/AAB pipeline used; no signing material committed
+- [ ] release APK is aligned, signed, and verified with the approved long-lived key
+- [ ] APK checksum and signing-certificate fingerprint are published with the release
+- [ ] no signing material or signing password is committed
 
-Current metadata (`versionName 0.1`, `versionCode 1`) is suitable only until the
-project designates the next distributable build. This repository does not yet
-define Play Store signing or hosted release automation.
+The first public build uses `versionName 0.1.0` and `versionCode 1`. GitHub Actions runs tests,
+lint, and an unsigned release build for every pull request and push to `main`. Distribution signing
+is intentionally separate: the long-lived key and passwords remain outside the repository, and the
+verified signed APK is published as a GitHub Release asset together with its checksum. The project
+does not currently define Play Store signing.

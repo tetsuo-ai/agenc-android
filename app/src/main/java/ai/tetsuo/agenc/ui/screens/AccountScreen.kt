@@ -929,8 +929,8 @@ private fun initials(identity: Identity): String? {
 @Composable
 private fun AccountScreenPreview() {
     val identity = Identity(
-        displayName = "Pavel C.",
-        email = "pavel@agenc.tech",
+        displayName = "AgenC User",
+        email = "user@example.invalid",
         accountId = "acct-preview",
     )
     AgenCTheme {
@@ -939,7 +939,7 @@ private fun AccountScreenPreview() {
                 phone = identity,
                 core = CoreAccountLinkState.Linked(identity),
             ),
-            machineName = "Pavel's MacBook Pro",
+            machineName = "Workstation",
             connectionStatus = ConnectionStatus.Connected,
             onRefreshAccount = {},
             onLogout = {},
@@ -953,10 +953,10 @@ private fun AccountScreenCoreLoggedOutPreview() {
     AgenCTheme {
         AccountScreen(
             account = AccountUiState(
-                phone = Identity("Pavel C.", "pavel@agenc.tech", "acct-preview"),
+                phone = Identity("AgenC User", "user@example.invalid", "acct-preview"),
                 core = CoreAccountLinkState.NotLoggedIn,
             ),
-            machineName = "Pavel's MacBook Pro",
+            machineName = "Workstation",
             connectionStatus = ConnectionStatus.Connected,
             onRefreshAccount = {},
             onLogout = {},
