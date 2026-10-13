@@ -11,7 +11,7 @@ object AppConfig {
     const val BACKEND_BASE = "https://id.agenc.ag"
 
     /** AgenC relay (Cloudflare worker). The app dials {RELAY_BASE}/v1/client?ticket=… */
-    const val RELAY_BASE = "wss://agenc-relay.chmirenko2.workers.dev"
+    const val RELAY_BASE = "wss://remote.agenc.tech"
 
     /** Direct same-network daemon (raw JSON-RPC, no relay envelope). */
     const val LOCAL_DAEMON = "ws://127.0.0.1:7766"
